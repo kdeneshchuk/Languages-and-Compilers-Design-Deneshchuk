@@ -1,0 +1,4 @@
+*.ll
+*.o
+tests/prog*
+__pycache__/

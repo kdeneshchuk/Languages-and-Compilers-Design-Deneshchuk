@@ -4,6 +4,114 @@ import llvmlite.binding as llvm
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 
+KEYWORDS = {"i32": "keyword", "mut": "keyword", "exit": "keyword"}
+
+def is_alpha(b):
+    return b is not None and (65 <= b <= 90 or 97 <= b <= 122 or b == 95)
+
+def is_digit(b):
+    return b is not None and 48 <= b <= 57
+
+
+class Token:
+    def __init__(self, kind, text, line, col):
+        self.kind = kind
+        self.text = text
+        self.line = line
+        self.col = col
+
+    def __repr__(self):
+        return f"Token({self.kind!r}, {self.text!r}, {self.line}, {self.col})"
+
+class CompileError(Exception):
+    pass
+
+
+def lex(data: bytes):
+    lines, tokens = [], []
+    state, start, start_line, start_col = "START", 0, 1, 1
+    line, col = 1, 1
+    brace_open = False
+    brace_line = brace_col = None
+
+    i = 0
+
+    while i <= len(data):
+        b = data[i] if i < len(data) else None
+
+        if state == "START":
+            if b is None:
+                if brace_open:
+                    raise CompileError(f"line {brace_line}:{brace_col}: '{{' is not closed before the end of the line")
+                break
+            elif b in (32, 9):
+                pass
+            elif b == 10:
+                if brace_open:
+                    raise CompileError(f"line {brace_line}:{brace_col}: '{{' is not closed before the end of the line")
+                lines.append(tokens)
+                tokens = []
+                line += 1
+                col = 0
+            elif is_alpha(b):
+                state, start, start_line, start_col = "IDENT", i, line, col
+            elif is_digit(b):
+                state, start, start_line, start_col = "NUMBER", i, line, col
+            elif b == ord("{"):
+                tokens.append(Token("lbrace", "{", line, col))
+                brace_open = True
+                brace_line, brace_col = line, col
+            elif b == ord("}"):
+                tokens.append(Token("rbrace", "}", line, col))
+                brace_open = False
+            elif b == ord("+"):
+                tokens.append(Token("operator", "+", line, col))
+            elif b == ord("-"):
+                tokens.append(Token("operator", "-", line, col))
+            elif b == ord("*"):
+                tokens.append(Token("operator", "*", line, col))
+            elif b == ord(":"):
+                state, start_line, start_col = "COLON", line, col
+            else:
+                raise CompileError(f"line {line}:{col}: unexpected byte {chr(b)!r}")
+
+        elif state == "IDENT":
+            if b is not None and (is_alpha(b) or is_digit(b)):
+                pass
+            else:
+                word = data[start:i].decode()
+                kind = KEYWORDS.get(word, "ident")
+                tokens.append(Token(kind, word, start_line, start_col))
+                state = "START"
+                continue
+
+        elif state == "NUMBER":
+            if b is not None and is_digit(b):
+                pass
+            elif b is not None and is_alpha(b):
+                raise CompileError(f"line {line}:{col}: unexpected letter in number")
+            else:
+                word = data[start:i].decode()
+                tokens.append(Token("number", word, start_line, start_col))
+                state = "START"
+                continue
+
+        elif state == "COLON":
+            if b == ord("="):
+                tokens.append(Token("operator", ":=", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(f"line {start_line}:{start_col}: ':' not followed by '='")
+
+        i += 1
+        col += 1
+
+    if tokens:
+        lines.append(tokens)
+    return lines
+
+
+
 def main_cli():
     src_path, out_path = sys.argv[1], sys.argv[2]
 

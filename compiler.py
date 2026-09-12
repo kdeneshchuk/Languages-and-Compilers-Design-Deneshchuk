@@ -115,8 +115,14 @@ def lex(data: bytes):
 def main_cli():
     src_path, out_path = sys.argv[1], sys.argv[2]
 
-    with open(src_path) as f:
-        lines = f.readlines()
+    with open(src_path, "rb") as f:
+        data = f.read()
+
+    try:
+        token_lines = lex(data)
+    except CompileError as e:
+        print(f"compilation error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     module = ir.Module(name="practice1")
     module.triple = llvm.get_default_triple()
@@ -133,71 +139,136 @@ def main_cli():
     fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
 
     symbols = {}
-    exited = False
 
-    def error(line_no, msg):
-        print(f"compilation error: line {line_no}: {msg}", file=sys.stderr)
+    def error(line, col, msg):
+        print(f"compilation error: line {line}:{col}: {msg}", file=sys.stderr)
         sys.exit(1)
 
-    def resolve(tok, line_no):
-        tok = tok.strip()
-        if tok.isdigit():
-            return ir.Constant(I32, int(tok))
-        if tok not in symbols:
-            error(line_no, f"undeclared variable '{tok}'")
-        return builder.load(symbols[tok])
+    def resolve_operand(tok):
+        if tok.kind == "number":
+            return ir.Constant(I32, int(tok.text))
+        elif tok.kind == "ident":
+            if tok.text not in symbols:
+                error(tok.line, tok.col, f"variable '{tok.text}' is used before its declaration")
+            return builder.load(symbols[tok.text]["ptr"])
+        else:
+            error(tok.line, tok.col, f"expected a constant or a variable, got '{tok.text}'")
 
-    for line_no, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-
-        if line.startswith("int "):
-            name = line[4:].strip()
-            if name in symbols:
-                error(line_no, f"variable '{name}' already declared")
-            symbols[name] = builder.alloca(I32, name=name)
-
-        elif line.startswith("exit "):
-            name = line[5:].strip()
-            if name not in symbols:
-                error(line_no, f"undeclared variable '{name}'")
-            val = builder.load(symbols[name])
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), val])
-            builder.ret(ir.Constant(I32, 0))
-            exited = True
-
-        elif ":=" in line:
-            target, expr = line.split(":=", 1)
-            target = target.strip()
-            expr = expr.strip()
-            if target not in symbols:
-                error(line_no, f"undeclared variable '{target}'")
-
-            op = None
-            for candidate in ("+", "-", "*"):
-                if candidate in expr:
-                    op = candidate
-                    break
-
-            if op:
-                lhs_tok, rhs_tok = expr.split(op, 1)
-                lhs = resolve(lhs_tok, line_no)
-                rhs = resolve(rhs_tok, line_no)
-                if op == "+":
-                    result = builder.add(lhs, rhs)
-                elif op == "-":
-                    result = builder.sub(lhs, rhs)
-                else:
-                    result = builder.mul(lhs, rhs)
+    def build_expr(tokens):
+        if len(tokens) == 1:
+            return resolve_operand(tokens[0])
+        elif len(tokens) == 3 and tokens[1].kind == "operator" and tokens[1].text in ("+", "-", "*"):
+            lhs = resolve_operand(tokens[0])
+            rhs = resolve_operand(tokens[2])
+            op = tokens[1].text
+            if op == "+":
+                return builder.add(lhs, rhs)
+            elif op == "-":
+                return builder.sub(lhs, rhs)
             else:
-                result = resolve(expr, line_no)
+                return builder.mul(lhs, rhs)
+        else:
+            bad = tokens[0]
+            error(bad.line, bad.col, "invalid expression")
 
-            builder.store(result, symbols[target])
+    def handle_declaration(tokens):
+        idx = 1
+
+        is_mut = False
+        if idx < len(tokens) and tokens[idx].kind == "keyword" and tokens[idx].text == "mut":
+            is_mut = True
+            idx += 1
+
+        if idx >= len(tokens) or tokens[idx].kind != "ident":
+            bad = tokens[idx] if idx < len(tokens) else tokens[-1]
+            error(bad.line, bad.col, "expected a variable name")
+        name_tok = tokens[idx]
+        idx += 1
+
+        if name_tok.text in symbols:
+            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' already declared")
+
+        if idx >= len(tokens) or tokens[idx].kind != "lbrace":
+            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' needs an initialiser in {{}}")
+        idx += 1
+
+        expr_tokens = []
+        while idx < len(tokens) and tokens[idx].kind != "rbrace":
+            expr_tokens.append(tokens[idx])
+            idx += 1
+        idx += 1
+
+        if not expr_tokens:
+            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' needs an initialiser in {{}}")
+
+        if idx != len(tokens):
+            bad = tokens[idx]
+            error(bad.line, bad.col, "unexpected extra tokens after declaration")
+
+        value = build_expr(expr_tokens)
+        ptr = builder.alloca(I32, name=name_tok.text)
+        builder.store(value, ptr)
+        symbols[name_tok.text] = {"ptr": ptr, "mut": is_mut}
+
+    def handle_assignment(tokens):
+        name_tok = tokens[0]
+
+        if name_tok.text not in symbols:
+            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' is used before its declaration")
+
+        if not symbols[name_tok.text]["mut"]:
+            error(name_tok.line, name_tok.col, f"cannot assign to '{name_tok.text}': it is not mut")
+
+        expr_tokens = tokens[2:]
+        if not expr_tokens:
+            error(tokens[1].line, tokens[1].col, "expected an expression after ':='")
+
+        value = build_expr(expr_tokens)
+        builder.store(value, symbols[name_tok.text]["ptr"])
+
+    def handle_exit(tokens):
+        operand_tokens = tokens[1:]
+
+        if len(operand_tokens) != 1:
+            bad = operand_tokens[0] if operand_tokens else tokens[0]
+            error(bad.line, bad.col, "exit expects exactly one constant or variable")
+
+        value = resolve_operand(operand_tokens[0])
+
+        builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
+        builder.ret(ir.Constant(I32, 0))
+
+        return True
+
+    exited = False
+    last_line = 0
+
+    for line_no, line_tokens in enumerate(token_lines, start=1):
+        last_line = line_no
+
+        if not line_tokens:
+            continue
+
+        first = line_tokens[0]
+
+        if exited:
+            error(first.line, first.col, "no statements are allowed after 'exit'")
+
+        if first.kind == "keyword" and first.text == "i32":
+            handle_declaration(line_tokens)
+
+        elif first.kind == "keyword" and first.text == "exit":
+            exited = handle_exit(line_tokens)
+
+        elif first.kind == "ident" and len(line_tokens) >= 2 and line_tokens[1].kind == "operator" and line_tokens[1].text == ":=":
+            handle_assignment(line_tokens)
 
         else:
-            error(line_no, f"cannot parse line: '{line}'")
+            error(first.line, first.col, "line is not a valid statement")
 
     if not exited:
-        error(line_no, "missing 'exit' statement")
+        error(last_line, 1, "missing 'exit' statement")
+
 
     with open(out_path, "w") as f:
         f.write(str(module))

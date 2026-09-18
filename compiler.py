@@ -55,6 +55,10 @@ class ProgramNode(Node):
     def children(self):
         return self.statements + [self.exit_node]
 
+    def codegen(self, builder, symbols):
+        for stmt in self.statements:
+            stmt.codegen(builder, symbols)
+        self.exit_node.codegen(builder, symbols)
 
 class StmtNode(Node):
     pass
@@ -73,6 +77,14 @@ class DeclNode(StmtNode):
     def children(self):
         return [self.init]
 
+    def codegen(self, builder, symbols):
+        if self.name in symbols:
+            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' already declared")
+        value = self.init.codegen(builder, symbols)
+        ptr = builder.alloca(I32, name=self.name)
+        builder.store(value, ptr)
+        symbols[self.name] = {"ptr": ptr, "mut": self.mutable}
+
 
 class AssignNode(StmtNode):
     def __init__(self, line, col, name, value):
@@ -86,6 +98,14 @@ class AssignNode(StmtNode):
     def children(self):
         return [self.value]
 
+    def codegen(self, builder, symbols):
+        if self.name not in symbols:
+            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' is used before its declaration")
+        if not symbols[self.name]["mut"]:
+            raise CompileError(f"line {self.line}:{self.col}: cannot assign to '{self.name}': it is not mut")
+        value = self.value.codegen(builder, symbols)
+        builder.store(value, symbols[self.name]["ptr"])
+
 
 class ExitNode(Node):
     def __init__(self, line, col, value):
@@ -98,6 +118,12 @@ class ExitNode(Node):
     def children(self):
         return [self.value]
 
+    def codegen(self, builder, symbols):
+        value = self.value.codegen(builder, symbols)
+        printf = builder.module.get_global("printf")
+        fmt = builder.module.get_global("fmt")
+        builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
+        builder.ret(ir.Constant(I32, 0))
 
 class ExprNode(Node):
     pass
@@ -116,6 +142,16 @@ class BinOpNode(ExprNode):
     def children(self):
         return [self.left, self.right]
 
+    def codegen(self, builder, symbols):
+        lhs = self.left.codegen(builder, symbols)
+        rhs = self.right.codegen(builder, symbols)
+        if self.op == "+":
+            return builder.add(lhs, rhs)
+        elif self.op == "-":
+            return builder.sub(lhs, rhs)
+        else:
+            return builder.mul(lhs, rhs)
+
 
 class VarNode(ExprNode):
     def __init__(self, line, col, name):
@@ -124,6 +160,11 @@ class VarNode(ExprNode):
 
     def label(self):
         return f"Var {self.name}"
+
+    def codegen(self, builder, symbols):
+        if self.name not in symbols:
+            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' is used before its declaration")
+        return builder.load(symbols[self.name]["ptr"])
 
 
 class ConstNode(ExprNode):
@@ -134,6 +175,8 @@ class ConstNode(ExprNode):
     def label(self):
         return f"Const {self.value}"
 
+    def codegen(self, builder, symbols):
+        return ir.Constant(I32, int(self.value))
 
 def lex(data: bytes):
     lines, tokens = [], []
@@ -363,144 +406,18 @@ def main_cli():
     main = ir.Function(module, ir.FunctionType(I32, []), name="main")
     builder = ir.IRBuilder(main.append_basic_block("entry"))
 
-    printf = ir.Function(module, ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
-                          name="printf")
+    ir.Function(module, ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True), name="printf")
 
     text = b"Program exit with result %d\n\0"
     fmt = ir.GlobalVariable(module, ir.ArrayType(I8, len(text)), name="fmt")
     fmt.linkage, fmt.global_constant = "private", True
     fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
 
-    symbols = {}
-
-    def error(line, col, msg):
-        print(f"compilation error: line {line}:{col}: {msg}", file=sys.stderr)
+    try:
+        tree.codegen(builder, {})
+    except CompileError as e:
+        print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    def resolve_operand(tok):
-        if tok.kind == "number":
-            return ir.Constant(I32, int(tok.text))
-        elif tok.kind == "ident":
-            if tok.text not in symbols:
-                error(tok.line, tok.col, f"variable '{tok.text}' is used before its declaration")
-            return builder.load(symbols[tok.text]["ptr"])
-        else:
-            error(tok.line, tok.col, f"expected a constant or a variable, got '{tok.text}'")
-
-    def build_expr(tokens):
-        if len(tokens) == 1:
-            return resolve_operand(tokens[0])
-        elif len(tokens) == 3 and tokens[1].kind == "operator" and tokens[1].text in ("+", "-", "*"):
-            lhs = resolve_operand(tokens[0])
-            rhs = resolve_operand(tokens[2])
-            op = tokens[1].text
-            if op == "+":
-                return builder.add(lhs, rhs)
-            elif op == "-":
-                return builder.sub(lhs, rhs)
-            else:
-                return builder.mul(lhs, rhs)
-        else:
-            bad = tokens[0]
-            error(bad.line, bad.col, "invalid expression")
-
-    def handle_declaration(tokens):
-        idx = 1
-
-        is_mut = False
-        if idx < len(tokens) and tokens[idx].kind == "keyword" and tokens[idx].text == "mut":
-            is_mut = True
-            idx += 1
-
-        if idx >= len(tokens) or tokens[idx].kind != "ident":
-            bad = tokens[idx] if idx < len(tokens) else tokens[-1]
-            error(bad.line, bad.col, "expected a variable name")
-        name_tok = tokens[idx]
-        idx += 1
-
-        if name_tok.text in symbols:
-            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' already declared")
-
-        if idx >= len(tokens) or tokens[idx].kind != "lbrace":
-            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' needs an initialiser in {{}}")
-        idx += 1
-
-        expr_tokens = []
-        while idx < len(tokens) and tokens[idx].kind != "rbrace":
-            expr_tokens.append(tokens[idx])
-            idx += 1
-        idx += 1
-
-        if not expr_tokens:
-            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' needs an initialiser in {{}}")
-
-        if idx != len(tokens):
-            bad = tokens[idx]
-            error(bad.line, bad.col, "unexpected extra tokens after declaration")
-
-        value = build_expr(expr_tokens)
-        ptr = builder.alloca(I32, name=name_tok.text)
-        builder.store(value, ptr)
-        symbols[name_tok.text] = {"ptr": ptr, "mut": is_mut}
-
-    def handle_assignment(tokens):
-        name_tok = tokens[0]
-
-        if name_tok.text not in symbols:
-            error(name_tok.line, name_tok.col, f"variable '{name_tok.text}' is used before its declaration")
-
-        if not symbols[name_tok.text]["mut"]:
-            error(name_tok.line, name_tok.col, f"cannot assign to '{name_tok.text}': it is not mut")
-
-        expr_tokens = tokens[2:]
-        if not expr_tokens:
-            error(tokens[1].line, tokens[1].col, "expected an expression after ':='")
-
-        value = build_expr(expr_tokens)
-        builder.store(value, symbols[name_tok.text]["ptr"])
-
-    def handle_exit(tokens):
-        operand_tokens = tokens[1:]
-
-        if len(operand_tokens) != 1:
-            bad = operand_tokens[0] if operand_tokens else tokens[0]
-            error(bad.line, bad.col, "exit expects exactly one constant or variable")
-
-        value = resolve_operand(operand_tokens[0])
-
-        builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
-        builder.ret(ir.Constant(I32, 0))
-
-        return True
-
-    exited = False
-    last_line = 0
-
-    for line_no, line_tokens in enumerate(token_lines, start=1):
-        last_line = line_no
-
-        if not line_tokens:
-            continue
-
-        first = line_tokens[0]
-
-        if exited:
-            error(first.line, first.col, "no statements are allowed after 'exit'")
-
-        if first.kind == "keyword" and first.text == "i32":
-            handle_declaration(line_tokens)
-
-        elif first.kind == "keyword" and first.text == "exit":
-            exited = handle_exit(line_tokens)
-
-        elif first.kind == "ident" and len(line_tokens) >= 2 and line_tokens[1].kind == "operator" and line_tokens[1].text == ":=":
-            handle_assignment(line_tokens)
-
-        else:
-            error(first.line, first.col, "line is not a valid statement")
-
-    if not exited:
-        error(last_line, 1, "missing 'exit' statement")
 
     with open(out_path, "w") as f:
         f.write(str(module))

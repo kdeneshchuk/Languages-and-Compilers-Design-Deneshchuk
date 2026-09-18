@@ -274,6 +274,32 @@ class Parser:
         self.pos += 1
         return tok
 
+    def parse_factor(self):
+        tok = self.peek()
+        if tok is None:
+            self.error("expected a constant or a variable, found end of line")
+        if tok.kind == "number":
+            self.eat()
+            return ConstNode(tok.line, tok.col, tok.text)
+        if tok.kind == "ident":
+            self.eat()
+            return VarNode(tok.line, tok.col, tok.text)
+        self.error(f"expected a constant or a variable, got '{tok.text}'")
+
+    def parse_term(self):
+        node = self.parse_factor()
+        while (tok := self.peek()) is not None and tok.kind == "operator" and tok.text == "*":
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_factor())
+        return node
+
+    def parse_expr(self):
+        node = self.parse_term()
+        while (tok := self.peek()) is not None and tok.kind == "operator" and tok.text in ("+", "-"):
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_term())
+        return node
+
     def error(self, msg, at=None):
         tok = at if at is not None else self.peek()
         if tok is not None:
@@ -289,29 +315,9 @@ class Parser:
             self.error(f"expected {what}, got '{tok.text}'")
         return self.eat()
 
-    def parse_operand(self):
-        tok = self.peek()
-        if tok is None:
-            self.error("expected a constant or a variable, found end of line")
-        if tok.kind == "number":
-            self.eat()
-            return ConstNode(tok.line, tok.col, tok.text)
-        if tok.kind == "ident":
-            self.eat()
-            return VarNode(tok.line, tok.col, tok.text)
-        self.error(f"expected a constant or a variable, got '{tok.text}'")
-
-    def parse_value(self):
-        left = self.parse_operand()
-        tok = self.peek()
-        if tok is not None and tok.kind == "operator" and tok.text in ("+", "-", "*"):
-            self.eat()
-            right = self.parse_operand()
-            return BinOpNode(tok.line, tok.col, tok.text, left, right)
-        return left
 
     def parse_decl(self):
-        self.eat()  # "i32" — the caller already looked at it
+        self.eat()
         mutable = False
         tok = self.peek()
         if tok is not None and tok.kind == "keyword" and tok.text == "mut":
@@ -321,25 +327,25 @@ class Parser:
         brace = self.peek()
         if brace is None or brace.kind != "lbrace":
             self.error(f"variable '{name_tok.text}' needs an initialiser in {{}}", at=name_tok)
-        self.eat()  # "{"
-        init = self.parse_value()
+        self.eat()
+        init = self.parse_expr()
         self.expect("rbrace", "'}'")
         return DeclNode(name_tok.line, name_tok.col, name_tok.text, mutable, init)
 
     def parse_assign(self):
-        name_tok = self.eat()  # ident — the caller already looked at it
+        name_tok = self.eat()
         tok = self.peek()
         if tok is None:
             self.error(f"expected ':=' after '{name_tok.text}', found end of line")
         if not (tok.kind == "operator" and tok.text == ":="):
             self.error(f"expected ':=' after '{name_tok.text}', got '{tok.text}'")
-        self.eat()  # ":="
-        value = self.parse_value()
+        self.eat()
+        value = self.parse_expr()
         return AssignNode(name_tok.line, name_tok.col, name_tok.text, value)
 
     def parse_exit(self):
-        exit_tok = self.eat()  # "exit"
-        value = self.parse_operand()
+        exit_tok = self.eat()
+        value = self.parse_factor()
         return ExitNode(exit_tok.line, exit_tok.col, value)
 
     def parse_statement(self):

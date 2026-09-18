@@ -1,0 +1,3 @@
+i32 mut a{10}
+a := a +
+exit a

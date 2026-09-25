@@ -4,7 +4,11 @@ import llvmlite.binding as llvm
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 
-KEYWORDS = {"i32": "keyword", "mut": "keyword", "exit": "keyword"}
+KEYWORDS = {
+    "i32": "keyword", "i64": "keyword", "bool": "keyword",
+    "mut": "keyword", "exit": "keyword",
+    "true": "keyword", "false": "keyword",
+}
 
 def is_alpha(b):
     return b is not None and (65 <= b <= 90 or 97 <= b <= 122 or b == 95)
@@ -65,14 +69,15 @@ class StmtNode(Node):
 
 
 class DeclNode(StmtNode):
-    def __init__(self, line, col, name, mutable, init):
+    def __init__(self, line, col, name, type_name, mutable, init):
         super().__init__(line, col)
         self.name = name
+        self.type_name = type_name
         self.mutable = mutable
         self.init = init
 
     def label(self):
-        return f"Decl {self.name} {'mut' if self.mutable else 'const'}"
+        return f"Decl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
     def children(self):
         return [self.init]
@@ -178,6 +183,17 @@ class ConstNode(ExprNode):
     def codegen(self, builder, symbols):
         return ir.Constant(I32, int(self.value))
 
+class BoolNode(ExprNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def label(self):
+        return f"Bool {'true' if self.value else 'false'}"
+
+    def codegen(self, builder, symbols):
+        return ir.Constant(ir.IntType(1), int(self.value))
+
 def lex(data: bytes):
     lines, tokens = [], []
     state, start, start_line, start_col = "START", 0, 1, 1
@@ -223,6 +239,10 @@ def lex(data: bytes):
                 tokens.append(Token("operator", "*", line, col))
             elif b == ord(":"):
                 state, start_line, start_col = "COLON", line, col
+            elif b == ord("="):
+                state, start_line, start_col = "EQ", line, col
+            elif b == ord("!"):
+                state, start_line, start_col = "BANG", line, col
             else:
                 raise CompileError(f"line {line}:{col}: unexpected byte {chr(b)!r}")
 
@@ -254,6 +274,20 @@ def lex(data: bytes):
             else:
                 raise CompileError(f"line {start_line}:{start_col}: ':' not followed by '='")
 
+        elif state == "EQ":
+            if b == ord("="):
+                tokens.append(Token("operator", "==", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(f"line {start_line}:{start_col}: expected '=='")
+
+        elif state == "BANG":
+            if b == ord("="):
+                tokens.append(Token("operator", "!=", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(f"line {start_line}:{start_col}: expected '!='")
+
         i += 1
         col += 1
 
@@ -281,6 +315,11 @@ class Parser:
         if tok.kind == "number":
             self.eat()
             return ConstNode(tok.line, tok.col, tok.text)
+
+        if tok.kind == "keyword" and tok.text in ("true", "false"):
+            self.eat()
+            return BoolNode(tok.line, tok.col, tok.text == "true")
+
         if tok.kind == "ident":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
@@ -293,11 +332,19 @@ class Parser:
             node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_factor())
         return node
 
-    def parse_expr(self):
+    def parse_arith(self):
         node = self.parse_term()
         while (tok := self.peek()) is not None and tok.kind == "operator" and tok.text in ("+", "-"):
             self.eat()
             node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_term())
+        return node
+
+    def parse_expr(self):
+        node = self.parse_arith()
+        tok = self.peek()
+        if tok is not None and tok.kind == "operator" and tok.text in ("==", "!="):
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_arith())
         return node
 
     def error(self, msg, at=None):
@@ -317,7 +364,8 @@ class Parser:
 
 
     def parse_decl(self):
-        self.eat()
+        type_tok = self.eat()
+        type_name = type_tok.text
         mutable = False
         tok = self.peek()
         if tok is not None and tok.kind == "keyword" and tok.text == "mut":
@@ -330,7 +378,7 @@ class Parser:
         self.eat()
         init = self.parse_expr()
         self.expect("rbrace", "'}'")
-        return DeclNode(name_tok.line, name_tok.col, name_tok.text, mutable, init)
+        return DeclNode(name_tok.line, name_tok.col, name_tok.text, type_name, mutable, init)
 
     def parse_assign(self):
         name_tok = self.eat()
@@ -350,7 +398,7 @@ class Parser:
 
     def parse_statement(self):
         tok = self.peek()
-        if tok.kind == "keyword" and tok.text == "i32":
+        if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
             return self.parse_decl()
         if tok.kind == "ident":
             return self.parse_assign()

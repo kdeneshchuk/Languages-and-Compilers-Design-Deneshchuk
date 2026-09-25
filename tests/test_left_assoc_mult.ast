@@ -1,0 +1,9 @@
+Program
+  Decl x const
+    BinOp *
+      BinOp *
+        Const 2
+        Const 3
+      Const 4
+  Exit
+    Var x

@@ -64,6 +64,9 @@ class ProgramNode(Node):
             stmt.codegen(builder, symbols)
         self.exit_node.codegen(builder, symbols)
 
+    def accept(self, visitor):
+        return visitor.visit_program(self)
+
 class StmtNode(Node):
     pass
 
@@ -90,6 +93,9 @@ class DeclNode(StmtNode):
         builder.store(value, ptr)
         symbols[self.name] = {"ptr": ptr, "mut": self.mutable}
 
+    def accept(self, visitor):
+        return visitor.visit_decl(self)
+
 
 class AssignNode(StmtNode):
     def __init__(self, line, col, name, value):
@@ -111,6 +117,8 @@ class AssignNode(StmtNode):
         value = self.value.codegen(builder, symbols)
         builder.store(value, symbols[self.name]["ptr"])
 
+    def accept(self, visitor):
+        return visitor.visit_assign(self)
 
 class ExitNode(Node):
     def __init__(self, line, col, value):
@@ -129,6 +137,9 @@ class ExitNode(Node):
         fmt = builder.module.get_global("fmt")
         builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
         builder.ret(ir.Constant(I32, 0))
+
+    def accept(self, visitor):
+        return visitor.visit_exit(self)
 
 class ExprNode(Node):
     pass
@@ -157,6 +168,8 @@ class BinOpNode(ExprNode):
         else:
             return builder.mul(lhs, rhs)
 
+    def accept(self, visitor):
+        return visitor.visit_binop(self)
 
 class VarNode(ExprNode):
     def __init__(self, line, col, name):
@@ -171,6 +184,8 @@ class VarNode(ExprNode):
             raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' is used before its declaration")
         return builder.load(symbols[self.name]["ptr"])
 
+    def accept(self, visitor):
+        return visitor.visit_var(self)
 
 class ConstNode(ExprNode):
     def __init__(self, line, col, value):
@@ -183,6 +198,9 @@ class ConstNode(ExprNode):
     def codegen(self, builder, symbols):
         return ir.Constant(I32, int(self.value))
 
+    def accept(self, visitor):
+        return visitor.visit_const(self)
+
 class BoolNode(ExprNode):
     def __init__(self, line, col, value):
         super().__init__(line, col)
@@ -193,6 +211,87 @@ class BoolNode(ExprNode):
 
     def codegen(self, builder, symbols):
         return ir.Constant(ir.IntType(1), int(self.value))
+
+    def accept(self, visitor):
+        return visitor.visit_bool(self)
+
+
+class SemanticChecker:
+    def __init__(self):
+        self.symbols = {}
+
+    def check(self, tree):
+        tree.accept(self)
+
+    def visit_program(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        node.exit_node.accept(self)
+
+    def visit_decl(self, node):
+        if node.name in self.symbols:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' already declared")
+        node.init.accept(self)
+        self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
+        self.symbols[node.name] = node
+
+    def visit_assign(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is used before its declaration")
+        decl = self.symbols[node.name]
+        if not decl.mutable:
+            raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': it is not mut")
+        node.value.accept(self)
+        self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
+        node.decl = decl
+
+    def visit_exit(self, node):
+        node.value.accept(self)
+
+    def visit_binop(self, node):
+        lt = node.left.accept(self)
+        rt = node.right.accept(self)
+        if node.op in ("+", "-", "*"):
+            if lt == "bool" or rt == "bool":
+                raise CompileError(f"line {node.line}:{node.col}: cannot apply '{node.op}' to bool")
+            node.type = "i64" if "i64" in (lt, rt) else "i32"
+        else:
+            if (lt == "bool") != (rt == "bool"):
+                other = rt if lt == "bool" else lt
+                raise CompileError(f"line {node.line}:{node.col}: cannot compare bool with {other}")
+            node.type = "bool"
+        return node.type
+
+    def visit_var(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is used before its declaration")
+        node.decl = self.symbols[node.name]
+        node.type = node.decl.type_name
+        return node.type
+
+    def visit_const(self, node):
+        value = int(node.value)
+        if value <= 2147483647:
+            node.type = "i32"
+        elif value <= 9223372036854775807:
+            node.type = "i64"
+        else:
+            raise CompileError(f"line {node.line}:{node.col}: constant {node.value} does not fit in i64")
+        return node.type
+
+    def visit_bool(self, node):
+        node.type = "bool"
+        return node.type
+
+    def check_assignable(self, expr, want, at, what):
+        have = expr.type
+        if have == want or (have == "i32" and want == "i64"):
+            return
+        if isinstance(expr, ConstNode) and want in ("i32", "i64"):
+            raise CompileError(f"line {expr.line}:{expr.col}: "
+                               f"constant {expr.value} does not fit in {want}")
+        raise CompileError(f"line {at.line}:{at.col}: cannot {what} of type {want} "
+                            f"with a value of type {have}")
 
 def lex(data: bytes):
     lines, tokens = [], []
@@ -452,6 +551,7 @@ def main_cli():
                     print(f"{tok.text!r} {tok.kind} {tok.line}:{tok.col}")
             return
         tree = Parser(token_lines).parse_program()
+        SemanticChecker().check(tree)
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)

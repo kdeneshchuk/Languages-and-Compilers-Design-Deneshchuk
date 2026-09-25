@@ -1,0 +1,4 @@
+bool b{true}
+i32 x{5}
+bool r{b == x}
+exit r

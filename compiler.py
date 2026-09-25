@@ -1,8 +1,16 @@
 import sys
+import os
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-I32, I8 = ir.IntType(32), ir.IntType(8)
+I32, I64, I1, I8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
+
+LLVM_TYPES = {"i32": I32, "i64": I64, "bool": I1}
+
+def coerce(builder, value, have, want):
+    if have == "i32" and want == "i64":
+        return builder.sext(value, I64, name="wide")
+    return value
 
 KEYWORDS = {
     "i32": "keyword", "i64": "keyword", "bool": "keyword",
@@ -59,10 +67,10 @@ class ProgramNode(Node):
     def children(self):
         return self.statements + [self.exit_node]
 
-    def codegen(self, builder, symbols):
+    def codegen(self, builder):
         for stmt in self.statements:
-            stmt.codegen(builder, symbols)
-        self.exit_node.codegen(builder, symbols)
+            stmt.codegen(builder)
+        self.exit_node.codegen(builder)
 
     def accept(self, visitor):
         return visitor.visit_program(self)
@@ -85,13 +93,12 @@ class DeclNode(StmtNode):
     def children(self):
         return [self.init]
 
-    def codegen(self, builder, symbols):
-        if self.name in symbols:
-            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' already declared")
-        value = self.init.codegen(builder, symbols)
-        ptr = builder.alloca(I32, name=self.name)
-        builder.store(value, ptr)
-        symbols[self.name] = {"ptr": ptr, "mut": self.mutable}
+    def codegen(self, builder):
+        llvm_ty = LLVM_TYPES[self.type_name]
+        value = self.init.codegen(builder)
+        value = coerce(builder, value, self.init.type, self.type_name)
+        self.ptr = builder.alloca(llvm_ty, name=self.name)
+        builder.store(value, self.ptr)
 
     def accept(self, visitor):
         return visitor.visit_decl(self)
@@ -109,13 +116,10 @@ class AssignNode(StmtNode):
     def children(self):
         return [self.value]
 
-    def codegen(self, builder, symbols):
-        if self.name not in symbols:
-            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' is used before its declaration")
-        if not symbols[self.name]["mut"]:
-            raise CompileError(f"line {self.line}:{self.col}: cannot assign to '{self.name}': it is not mut")
-        value = self.value.codegen(builder, symbols)
-        builder.store(value, symbols[self.name]["ptr"])
+    def codegen(self, builder):
+        value = self.value.codegen(builder)
+        value = coerce(builder, value, self.value.type, self.decl.type_name)
+        builder.store(value, self.decl.ptr)
 
     def accept(self, visitor):
         return visitor.visit_assign(self)
@@ -131,11 +135,21 @@ class ExitNode(Node):
     def children(self):
         return [self.value]
 
-    def codegen(self, builder, symbols):
-        value = self.value.codegen(builder, symbols)
+    def codegen(self, builder):
+        value = self.value.codegen(builder)
         printf = builder.module.get_global("printf")
-        fmt = builder.module.get_global("fmt")
-        builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
+
+        if self.value.type == "bool":
+            fmt = builder.module.get_global("fmt_bool")
+            true_ptr = builder.bitcast(builder.module.get_global("true_str"), ir.PointerType(I8))
+            false_ptr = builder.bitcast(builder.module.get_global("false_str"), ir.PointerType(I8))
+            chosen = builder.select(value, true_ptr, false_ptr)
+            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), chosen])
+        else:
+            wide = coerce(builder, value, self.value.type, "i64")
+            fmt = builder.module.get_global("fmt")
+            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), wide])
+
         builder.ret(ir.Constant(I32, 0))
 
     def accept(self, visitor):
@@ -158,15 +172,25 @@ class BinOpNode(ExprNode):
     def children(self):
         return [self.left, self.right]
 
-    def codegen(self, builder, symbols):
-        lhs = self.left.codegen(builder, symbols)
-        rhs = self.right.codegen(builder, symbols)
-        if self.op == "+":
-            return builder.add(lhs, rhs)
-        elif self.op == "-":
-            return builder.sub(lhs, rhs)
+    def codegen(self, builder):
+        lhs = self.left.codegen(builder)
+        rhs = self.right.codegen(builder)
+
+        if self.op in ("+", "-", "*"):
+            lhs = coerce(builder, lhs, self.left.type, self.type)
+            rhs = coerce(builder, rhs, self.right.type, self.type)
+            if self.op == "+":
+                return builder.add(lhs, rhs)
+            elif self.op == "-":
+                return builder.sub(lhs, rhs)
+            else:
+                return builder.mul(lhs, rhs)
         else:
-            return builder.mul(lhs, rhs)
+            common = "i64" if "i64" in (self.left.type, self.right.type) else self.left.type
+            lhs = coerce(builder, lhs, self.left.type, common)
+            rhs = coerce(builder, rhs, self.right.type, common)
+            pred = "==" if self.op == "==" else "!="
+            return builder.icmp_signed(pred, lhs, rhs)
 
     def accept(self, visitor):
         return visitor.visit_binop(self)
@@ -179,10 +203,8 @@ class VarNode(ExprNode):
     def label(self):
         return f"Var {self.name}"
 
-    def codegen(self, builder, symbols):
-        if self.name not in symbols:
-            raise CompileError(f"line {self.line}:{self.col}: variable '{self.name}' is used before its declaration")
-        return builder.load(symbols[self.name]["ptr"])
+    def codegen(self, builder):
+        return builder.load(self.decl.ptr)
 
     def accept(self, visitor):
         return visitor.visit_var(self)
@@ -195,8 +217,8 @@ class ConstNode(ExprNode):
     def label(self):
         return f"Const {self.value}"
 
-    def codegen(self, builder, symbols):
-        return ir.Constant(I32, int(self.value))
+    def codegen(self, builder):
+        return ir.Constant(LLVM_TYPES[self.type], int(self.value))
 
     def accept(self, visitor):
         return visitor.visit_const(self)
@@ -209,8 +231,8 @@ class BoolNode(ExprNode):
     def label(self):
         return f"Bool {'true' if self.value else 'false'}"
 
-    def codegen(self, builder, symbols):
-        return ir.Constant(ir.IntType(1), int(self.value))
+    def codegen(self, builder):
+        return ir.Constant(I1, int(self.value))
 
     def accept(self, visitor):
         return visitor.visit_bool(self)
@@ -537,11 +559,31 @@ def main_cli():
         mode = args[0]
         args = args[1:]
 
+    if mode is None and len(args) != 2:
+        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        sys.exit(2)
+    if mode is not None and len(args) != 1:
+        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        sys.exit(2)
+
+    if args[0].startswith("-"):
+        print(f"unknown option {args[0]!r}", file=sys.stderr)
+        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        sys.exit(2)
+
     src_path = args[0]
     out_path = args[1] if mode is None else None
 
-    with open(src_path, "rb") as f:
-        data = f.read()
+    if out_path is not None and os.path.abspath(out_path) == os.path.abspath(src_path):
+        print("refusing to overwrite the input file", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        with open(src_path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        print(f"cannot read {src_path}: {e.strerror}", file=sys.stderr)
+        sys.exit(2)
 
     try:
         token_lines = lex(data)
@@ -568,13 +610,28 @@ def main_cli():
 
     ir.Function(module, ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True), name="printf")
 
-    text = b"Program exit with result %d\n\0"
+    text = b"Program exit with result %lld\n\0"
     fmt = ir.GlobalVariable(module, ir.ArrayType(I8, len(text)), name="fmt")
     fmt.linkage, fmt.global_constant = "private", True
     fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
 
+    text_bool = b"Program exit with result %s\n\0"
+    fmt_bool = ir.GlobalVariable(module, ir.ArrayType(I8, len(text_bool)), name="fmt_bool")
+    fmt_bool.linkage, fmt_bool.global_constant = "private", True
+    fmt_bool.initializer = ir.Constant(ir.ArrayType(I8, len(text_bool)), bytearray(text_bool))
+
+    true_text = b"true\0"
+    true_str = ir.GlobalVariable(module, ir.ArrayType(I8, len(true_text)), name="true_str")
+    true_str.linkage, true_str.global_constant = "private", True
+    true_str.initializer = ir.Constant(ir.ArrayType(I8, len(true_text)), bytearray(true_text))
+
+    false_text = b"false\0"
+    false_str = ir.GlobalVariable(module, ir.ArrayType(I8, len(false_text)), name="false_str")
+    false_str.linkage, false_str.global_constant = "private", True
+    false_str.initializer = ir.Constant(ir.ArrayType(I8, len(false_text)), bytearray(false_text))
+
     try:
-        tree.codegen(builder, {})
+        tree.codegen(builder)
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)

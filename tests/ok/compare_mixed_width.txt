@@ -1,0 +1,4 @@
+i32 x{5}
+i64 y{5}
+bool r{x == y}
+exit r

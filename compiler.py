@@ -382,27 +382,33 @@ class Parser:
 
         return ProgramNode(1, 1, stmts, exit_node)
 
-
 def main_cli():
     args = sys.argv[1:]
-    ast_mode = bool(args) and args[0] == "--ast"
-    if ast_mode:
+
+    mode = None
+    if args and args[0] in ("--ast", "--tokens"):
+        mode = args[0]
         args = args[1:]
 
     src_path = args[0]
-    out_path = args[1] if not ast_mode else None
+    out_path = args[1] if mode is None else None
 
     with open(src_path, "rb") as f:
         data = f.read()
 
     try:
         token_lines = lex(data)
+        if mode == "--tokens":
+            for line_tokens in token_lines:
+                for tok in line_tokens:
+                    print(f"{tok.text!r} {tok.kind} {tok.line}:{tok.col}")
+            return
         tree = Parser(token_lines).parse_program()
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if ast_mode:
+    if mode == "--ast":
         tree.dump()
         return
 

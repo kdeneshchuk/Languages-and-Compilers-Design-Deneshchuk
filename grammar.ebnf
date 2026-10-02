@@ -1,8 +1,10 @@
-program   ::= { statement }
-statement ::= decl | assign | exit
-decl      ::= "i32" [ "mut" ] ident "{" expr "}"
+program   ::= { statement } exit
+statement ::= decl | assign
+decl      ::= type [ "mut" ] ident "{" expr "}"
+type      ::= "i32" | "i64" | "bool"
 assign    ::= ident ":=" expr
 exit      ::= "exit" factor
-expr      ::= term { ("+" | "-") term }
+expr      ::= arith [ ("==" | "!=") arith ]
+arith     ::= term { ("+" | "-") term }
 term      ::= factor { "*" factor }
-factor    ::= number | ident
+factor    ::= number | "true" | "false" | ident

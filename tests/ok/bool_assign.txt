@@ -1,0 +1,5 @@
+bool a{true}
+bool b{false}
+bool mut r{true}
+r := a == b
+exit r

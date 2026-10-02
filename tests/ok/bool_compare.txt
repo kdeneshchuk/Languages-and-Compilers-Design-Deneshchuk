@@ -1,0 +1,4 @@
+bool a{true}
+bool b{true}
+bool r{a == b}
+exit r

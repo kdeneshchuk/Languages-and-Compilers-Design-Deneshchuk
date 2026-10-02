@@ -1,0 +1,203 @@
+AI USAGE LOG — Practice 4 (Languages and Compilers Design)
+Student: Khrystyna Deneshchuk
+Tool used: Claude (Anthropic), chat-based assistant, used interactively throughout the whole practice
+============================================================
+
+OVERVIEW
+--------
+I used Claude as a step-by-step tutor/pair-programmer while extending the Practice 3
+compiler (Python + llvmlite) with:
+  1) new types i32 / i64 / bool and the == / != comparison operators (lexer + grammar + parser),
+  2) a separate semantic-analysis pass (SemanticChecker) that type-checks the AST
+     before code generation,
+  3) the corresponding LLVM codegen changes (widening/coercion, comparisons, bool exit).
+
+Workflow: I asked Claude to go through the practice task by task, explain each change
+line by line, and never add anything beyond what was asked without telling me first.
+I ran every command myself in my Ubuntu VM terminal and pasted the actual output back
+to Claude for review; Claude only saw what I pasted, it did not run anything on my
+machine itself.
+
+============================================================
+TASK 1 — Types (i32/i64/bool) and comparison operators (0.5 pt)
+============================================================
+
+Prompts (mine, paraphrased from the actual chat):
+ - "давай тоді тепер йти поступово по практиці і розберемо цю частину" (+ pasted the
+   practice's language spec / Task 1 description)
+ - "давай тепер розберемо це завдання"
+ - "давай тепер покроково з поясненнями робити"
+ - "ось що в мене є зараз, з чого починаємо?"
+ - "давай покроково з поясненнями будемо робити"
+ - "так" (confirming the proposed plan)
+ - several short follow-up questions confirming exact insertion points and whether a
+   change matched the task description
+
+What Claude proposed / I took as-is:
+ - Added `i32`, `i64`, `bool`, `true`, `false` as new keywords in the lexer.
+ - Added new lexer states for `==` and `!=` (previously the lexer only had `:=`),
+   with correct line:col error reporting for a lone `=` or `!`.
+ - Extended grammar.ebnf: `type ::= "i32" | "i64" | "bool"`, `expr ::= arith [
+   ("==" | "!=") arith ]` (single, non-chainable comparison).
+ - Added a `BoolNode` AST class and gave `DeclNode` a `type_name` field.
+ - Updated the parser: `parse_factor` handles `true`/`false`; `parse_decl` records the
+   declared type; `parse_statement` accepts all three types; comparisons are parsed
+   with a single optional `if` (not `while`), matching the "no chaining" grammar rule.
+ - Updated the 6 existing `.ast` snapshot files (from Practice 2/3) to include the
+   `i32` type annotation that decl/const nodes now carry.
+
+What I changed / pushed back on:
+ - Nothing structurally — I asked Claude to only do exactly what Task 1 asked and not
+   start on semantic checking or codegen yet, so the diff stayed scoped to lexer +
+   grammar + parser + AST for this task.
+ - Verified myself in the VM: ran `--ast` on the practice's example program and on two
+   intentionally malformed inputs (`a=1`, `!b`) to confirm the lexer errors point at
+   the right line:col.
+
+============================================================
+TASK 2 — Semantic checker / type checking pass (1.5 pt)
+============================================================
+
+Prompts (mine, paraphrased):
+ - "давай тепер розберемо це завдання" (Task 2 description pasted)
+ - "так" (confirming plan)
+ - many short clarifying questions while implementing (where to add a method, whether
+   a particular check was already covered by the task text, etc.)
+ - "перевір чи все ми виконали по завданню 1 та 2 правильно"
+ - "перевіряй дуже уважно чи виконали ми все по завданню і правильно"
+
+What Claude proposed / I took as-is:
+ - A visitor pattern: `accept(self, visitor)` added to every AST node, dispatching to
+   `visitor.visit_<node>`.
+ - A new `SemanticChecker` class with its own symbol table (name -> DeclNode),
+   run as a separate pass between parsing and codegen.
+ - The five type rules from the task: no redeclaration, no use-before-declaration, no
+   assignment to non-`mut` variables, only i32->i64 widening allowed (no narrowing, no
+   bool<->integer conversion in any direction), and `==`/`!=` only between two
+   comparable (matching bool-ness) operands.
+ - Error messages with `line:col` pointing either at the assignment/declaration site,
+   or — specifically for an out-of-range constant — at the constant itself, since the
+   task expects the error location to make sense to a user reading the diagnostic.
+
+Bug we found and fixed together:
+ - All 8 new `accept()` methods had been copy-pasted from `ExitNode.accept` and all
+   called `visitor.visit_exit(self)` instead of their own `visit_<node>` method. Found
+   by grepping the file for `visit_exit`; fixed by replacing each occurrence in order
+   with the correct visit name.
+ - The overflow-constant error initially reported the position of the variable name
+   instead of the constant when a stand-alone literal (e.g. `i32 x { 3000000000 }`)
+   didn't fit the declared width; added a specific branch in `check_assignable` for
+   this case so the diagnostic points at the constant.
+
+What I changed / verified myself:
+ - Ran the compiler against 9 different invalid programs (bool arithmetic, narrowing
+   on decl and on assign, bool<->int in both directions, overflow constant, bool vs
+   int compare, malformed `==`, chained comparison, operator after `exit`,
+   self-reference in initializer) and confirmed every message and line:col matched
+   what the task expects.
+
+============================================================
+TASK 3 — LLVM codegen: widening, comparisons, bool exit (1 pt)
+============================================================
+
+Prompts (mine, paraphrased):
+ - "давай тепер розберемо це завдання" (Task 3 description pasted)
+ - "так" (confirming plan)
+ - "дай повний код на run_tests.py"
+ - "перевіряй уважно файл тепер"
+ - "де саме його вставити"
+
+What Claude proposed / I took as-is:
+ - Removed the old ad-hoc `symbols` dict used during codegen; `DeclNode` now stores
+   its own alloca pointer (`self.ptr`), and `VarNode`/`AssignNode` read/write through
+   `self.decl.ptr`, set earlier by the semantic pass.
+ - A single `coerce(builder, value, have, want)` helper that emits `sext` only for
+   i32->i64, used in the 5 places that need it: variable initializer, assignment,
+   both operands of `+ - *`, both operands of `== !=`, and the exit value.
+ - `LLVM_TYPES` mapping `i32/i64/bool` to `ir.IntType(32/64/1)`.
+ - `BinOpNode` codegen split into two paths: arithmetic (coerce both sides to the
+   already-computed `node.type` from the semantic pass) vs. comparison (coerce both
+   sides to the wider of the two, then `icmp_signed`).
+ - `ExitNode` codegen split on bool vs integer: integer exit values are widened to
+   i64 and printed with `%lld`; bool exit values are turned into `"true"/"false"`
+   global string constants via `builder.select` and printed with `%s`.
+ - A completely new Python test runner (`run_tests.py`) replacing the old bash loop,
+   which compiles + runs each `tests/**/*.txt` with `lli`, compares stdout/stderr
+   against a `.expected` file, and separately diffs `--ast` output against `.ast`
+   snapshots.
+
+Bug we found and fixed together:
+ - While hand-editing `main_cli()` in `nano` to add CLI argument validation, the
+   whole `try: lex/parse/SemanticChecker ... except CompileError` block got
+   accidentally deleted. Found by asking Claude to re-read the whole file carefully;
+   Claude pointed out exactly where the block used to sit and gave me the code to
+   restore it.
+ - Closed the remaining open code-review items about CLI argument handling: unknown
+   flag now reports a clean error (`args[0].startswith("-")`) instead of a Python
+   traceback; refuses to run if the output path equals the input path (prevents
+   overwriting the source file); wrapped file-opening in `try/except OSError` for a
+   one-line error instead of a traceback on a missing input file.
+
+What I changed / verified myself:
+ - Re-ran the full Practice 2/3 regression suite (32 old tests) plus the Task 1
+   worked example and the bool-exit example after every codegen change, to make sure
+   nothing that used to pass broke.
+
+============================================================
+FINAL REVIEW / TEST-COVERAGE PASS
+============================================================
+
+Prompts (mine, paraphrased):
+ - "переглянь тепер фінально чи все ми зробили правильно по завданню нічого не
+   забули"
+ - "ми тестами все покрили? можливо є якісь додаткові дірки які ми не перевірили і
+   краще тести теж додати"
+ - pasted both code-review comment threads from Practice 2 and Practice 3 and asked
+   "ці питання закрили? окрім ші юзедж"
+
+What Claude found and I acted on:
+ - Compared the finished implementation against the full practice PDF text
+   (including the warm-up exercise and the exact submission requirements) and
+   confirmed nothing from the spec was missed.
+ - Identified 5 gaps in test coverage that I then added:
+     - `!=` was never exercised (only `==`) -> added `compare_not_equal.txt`.
+     - the i32->i64 widening coercion on plain assignment (`:=`) was never exercised
+       with a real width change -> added `widen_assign.txt`.
+     - values above 2^31 (where a missing `sext` would silently produce a wrong,
+       truncated number) were never exercised -> added `above_two_billion.txt`.
+     - `bool` through `AssignNode`, and the `false` branch of the `select` in the
+       bool-exit codegen, were never exercised -> added `bool_assign.txt`.
+     - missing negative tests for "two chained comparisons" and "an operator right
+       after `exit`" -> added `double_comparison.txt` and `exit_operation.txt`, plus
+       `self_reference.txt` for using a variable in its own initializer.
+ - Went through both review threads (Practice 2 review, Practice 3 review, both
+   passes) point by point and confirmed every item was addressed by the current code,
+   with the single exception of this file (ai_usage.txt), which the reviewer asked
+   for explicitly on three separate occasions.
+
+Final test result (verified by me, in my own VM):
+ 61 passed, 0 failed
+ (32 tests carried over from Practice 2/3, 12 new `tests/ok/*`, 11 new `tests/err/*`,
+ 6 `.ast` snapshot tests)
+
+============================================================
+SUMMARY: WHAT WAS TAKEN AS-IS vs. WHAT I CHANGED
+============================================================
+Taken mostly as-is (after I reviewed and understood it):
+ - The overall visitor-pattern structure for the semantic pass.
+ - The `coerce()` helper and where its 5 call sites live.
+ - The split of `BinOpNode` codegen into arithmetic vs. comparison paths.
+ - The `run_tests.py` test runner.
+
+Changed / driven by me:
+ - The scope and pace of every step — I explicitly asked Claude not to implement more
+   than the current task, and to explain each change before I typed/ran it.
+ - All actual code execution, test running, and reading of output happened in my own
+   terminal; I pasted results back for review rather than letting the assistant run
+   anything for me.
+ - The decision of which additional tests to add after the coverage discussion above.
+ - Manual edits in `nano` (which caused the accidentally-deleted block, later fixed
+   together).
+
+Not used for: writing the practice's language specification, the grading rubric, or
+any part of the report/README not related to this compiler.

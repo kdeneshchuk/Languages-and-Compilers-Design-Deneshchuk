@@ -1,0 +1,10 @@
+i32 n{1}
+if n
+{
+    exit 1
+}
+else
+{
+    exit 2
+}
+exit 0

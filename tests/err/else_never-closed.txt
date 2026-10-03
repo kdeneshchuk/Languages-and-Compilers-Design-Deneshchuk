@@ -1,0 +1,8 @@
+bool c{true}
+if c
+{
+    i32 a{1}
+}
+else
+{
+    i32 b{2}

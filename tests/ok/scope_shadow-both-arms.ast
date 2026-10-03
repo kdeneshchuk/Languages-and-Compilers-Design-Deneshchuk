@@ -1,0 +1,22 @@
+Program
+  Decl x i32 mut
+    Const 1
+  If
+    BinOp ==
+      Var x
+      Const 1
+    Block
+      Decl x bool const
+        Bool true
+      If
+        Var x
+        Block
+          Exit
+            Const 11
+    Block
+      Decl x i64 const
+        Const 22
+      Exit
+        Var x
+  Exit
+    Var x

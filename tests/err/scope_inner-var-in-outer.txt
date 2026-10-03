@@ -1,0 +1,10 @@
+if true
+{
+    i32 mut a{1}
+    if true
+    {
+        i32 b{2}
+    }
+    a := b
+}
+exit 0

@@ -1,0 +1,10 @@
+bool c{true}
+if c
+{
+    i32 t{1}
+}
+else
+{
+    exit t
+}
+exit 0

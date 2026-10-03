@@ -1,0 +1,16 @@
+i32 mut a{0}
+if true
+{
+    if true
+    {
+        if true
+        {
+            a := 7
+        }
+        else
+        {
+            a := 8
+        }
+    }
+}
+exit a

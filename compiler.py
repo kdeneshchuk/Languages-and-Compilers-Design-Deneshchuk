@@ -16,6 +16,7 @@ KEYWORDS = {
     "i32": "keyword", "i64": "keyword", "bool": "keyword",
     "mut": "keyword", "exit": "keyword",
     "true": "keyword", "false": "keyword",
+    "if": "keyword", "else": "keyword",
 }
 
 def is_alpha(b):
@@ -107,6 +108,43 @@ class AssignNode(StmtNode):
     def accept(self, visitor):
         return visitor.visit_assign(self)
 
+
+class BlockNode(Node):
+    def __init__(self, line, col, statements, exit_node):
+        super().__init__(line, col)
+        self.statements = statements
+        self.exit_node = exit_node
+
+    def label(self):
+        return "Block"
+
+    def children(self):
+        if self.exit_node is None:
+            return self.statements
+        return self.statements + [self.exit_node]
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
+
+
+class IfNode(StmtNode):
+    def __init__(self, line, col, condition, then_block, else_block):
+        super().__init__(line, col)
+        self.condition = condition
+        self.then_block = then_block
+        self.else_block = else_block
+
+    def label(self):
+        return "If"
+
+    def children(self):
+        if self.else_block is None:
+            return [self.condition, self.then_block]
+        return [self.condition, self.then_block, self.else_block]
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
 class ExitNode(Node):
     def __init__(self, line, col, value):
         super().__init__(line, col)
@@ -173,6 +211,21 @@ class BoolNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_bool(self)
+
+
+class NotNode(ExprNode):
+    def __init__(self, line, col, operand):
+        super().__init__(line, col)
+        self.operand = operand
+
+    def label(self):
+        return "Not"
+
+    def children(self):
+        return [self.operand]
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
 
 
 class SemanticChecker:
@@ -329,8 +382,6 @@ def lex(data: bytes):
     lines, tokens = [], []
     state, start, start_line, start_col = "START", 0, 1, 1
     line, col = 1, 1
-    brace_open = False
-    brace_line = brace_col = None
 
     i = 0
 
@@ -339,14 +390,10 @@ def lex(data: bytes):
 
         if state == "START":
             if b is None:
-                if brace_open:
-                    raise CompileError(f"line {brace_line}:{brace_col}: '{{' is not closed before the end of the line")
                 break
             elif b in (32, 9, 13):
                 pass
             elif b == 10:
-                if brace_open:
-                    raise CompileError(f"line {brace_line}:{brace_col}: '{{' is not closed before the end of the line")
                 lines.append(tokens)
                 tokens = []
                 line += 1
@@ -357,11 +404,8 @@ def lex(data: bytes):
                 state, start, start_line, start_col = "NUMBER", i, line, col
             elif b == ord("{"):
                 tokens.append(Token("lbrace", "{", line, col))
-                brace_open = True
-                brace_line, brace_col = line, col
             elif b == ord("}"):
                 tokens.append(Token("rbrace", "}", line, col))
-                brace_open = False
             elif b == ord("+"):
                 tokens.append(Token("operator", "+", line, col))
             elif b == ord("-"):
@@ -417,7 +461,9 @@ def lex(data: bytes):
                 tokens.append(Token("operator", "!=", start_line, start_col))
                 state = "START"
             else:
-                raise CompileError(f"line {start_line}:{start_col}: expected '!='")
+                tokens.append(Token("operator", "!", start_line, start_col))
+                state = "START"
+                continue
 
         i += 1
         col += 1
@@ -430,6 +476,27 @@ def lex(data: bytes):
 class Parser:
     def __init__(self, lines):
         self.lines, self.toks, self.pos = lines, [], 0
+        self.line_idx = 0
+
+    def peek_line(self):
+        while self.line_idx < len(self.lines) and not self.lines[self.line_idx]:
+            self.line_idx += 1
+        if self.line_idx < len(self.lines):
+            return self.lines[self.line_idx]
+        return None
+
+    def next_line(self):
+        toks = self.peek_line()
+        if toks is None:
+            return None
+        self.line_idx += 1
+        self.toks, self.pos = toks, 0
+        return toks
+
+    def expect_eol(self):
+        tok = self.peek()
+        if tok is not None:
+            self.error(f"unexpected '{tok.text}' after the statement")
 
     def peek(self):
         return self.toks[self.pos] if self.pos < len(self.toks) else None
@@ -454,6 +521,10 @@ class Parser:
         if tok.kind == "ident":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
+
+        if tok.kind == "operator" and tok.text == "!":
+            self.eat()
+            return NotNode(tok.line, tok.col, self.parse_factor())
         self.error(f"expected a constant or a variable, got '{tok.text}'")
 
     def parse_term(self):
@@ -527,22 +598,66 @@ class Parser:
         value = self.parse_factor()
         return ExitNode(exit_tok.line, exit_tok.col, value)
 
+    def parse_block(self, after):
+        toks = self.next_line()
+        if toks is None:
+            self.error(f"expected '{{' on its own line after {after}, found end of file")
+        if self.peek().kind != "lbrace":
+            self.error(f"expected '{{' on its own line after {after}, got '{self.peek().text}'")
+        lbrace = self.eat()
+        self.expect_eol()
+
+        statements, exit_node = [], None
+        while True:
+            if self.next_line() is None:
+                self.error("'{' is never closed", at=lbrace)
+            first = self.peek()
+            if first.kind == "rbrace":
+                self.eat()
+                self.expect_eol()
+                break
+            if exit_node is not None:
+                self.error("statement after 'exit' in the same block")
+            if first.kind == "keyword" and first.text == "exit":
+                exit_node = self.parse_exit()
+            else:
+                statements.append(self.parse_statement())
+            self.expect_eol()
+
+        if not statements and exit_node is None:
+            self.error("empty block", at=lbrace)
+        return BlockNode(lbrace.line, lbrace.col, statements, exit_node)
+
+    def parse_if(self):
+        if_tok = self.eat()
+        condition = self.parse_expr()
+        self.expect_eol()
+        then_block = self.parse_block("'if'")
+
+        else_block = None
+        nxt = self.peek_line()
+        if nxt is not None and nxt[0].kind == "keyword" and nxt[0].text == "else":
+            self.next_line()
+            self.eat()
+            self.expect_eol()
+            else_block = self.parse_block("'else'")
+        return IfNode(if_tok.line, if_tok.col, condition, then_block, else_block)
+
     def parse_statement(self):
         tok = self.peek()
         if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
             return self.parse_decl()
+        if tok.kind == "keyword" and tok.text == "if":
+            return self.parse_if()
+        if tok.kind == "keyword" and tok.text == "else":
+            self.error("'else' without an 'if'")
         if tok.kind == "ident":
             return self.parse_assign()
         self.error(f"cannot start a statement with '{tok.text}'")
 
     def parse_program(self):
         stmts, exit_node, last_line = [], None, 1
-        for line_no, toks in enumerate(self.lines, start=1):
-            if not toks:
-                continue
-            last_line = line_no
-            self.toks, self.pos = toks, 0
-
+        while self.next_line() is not None:
             if exit_node is not None:
                 self.error("no statements are allowed after 'exit'")
 
@@ -552,9 +667,8 @@ class Parser:
             else:
                 stmts.append(self.parse_statement())
 
-            if self.peek() is not None:
-                bad = self.peek()
-                self.error(f"unexpected '{bad.text}' after the statement")
+            self.expect_eol()
+            last_line = self.toks[0].line
 
         if exit_node is None:
             raise CompileError(f"line {last_line}:1: missing 'exit' statement")
@@ -603,14 +717,13 @@ def main_cli():
                     print(f"{tok.text!r} {tok.kind} {tok.line}:{tok.col}")
             return
         tree = Parser(token_lines).parse_program()
+        if mode == "--ast":
+            tree.dump()
+            return
         SemanticChecker().check(tree)
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    if mode == "--ast":
-        tree.dump()
-        return
 
     module = ir.Module(name="practice1")
     module.triple = llvm.get_default_triple()

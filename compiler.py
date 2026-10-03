@@ -230,10 +230,16 @@ class NotNode(ExprNode):
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}
+        self.scopes = [{}]
 
     def check(self, tree):
         tree.accept(self)
+
+    def lookup(self, node, name):
+        for frame in reversed(self.scopes):
+            if name in frame:
+                return frame[name]
+        raise CompileError(f"line {node.line}:{node.col}: variable '{name}' is used before its declaration")
 
     def visit_program(self, node):
         for stmt in node.statements:
@@ -241,16 +247,14 @@ class SemanticChecker:
         node.exit_node.accept(self)
 
     def visit_decl(self, node):
-        if node.name in self.symbols:
-            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' already declared")
+        if node.name in self.scopes[-1]:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is already declared in this block")
         node.init.accept(self)
         self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
-        self.symbols[node.name] = node
+        self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is used before its declaration")
-        decl = self.symbols[node.name]
+        decl = self.lookup(node, node.name)
         if not decl.mutable:
             raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': it is not mut")
         node.value.accept(self)
@@ -275,9 +279,7 @@ class SemanticChecker:
         return node.type
 
     def visit_var(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is used before its declaration")
-        node.decl = self.symbols[node.name]
+        node.decl = self.lookup(node, node.name)
         node.type = node.decl.type_name
         return node.type
 
@@ -292,6 +294,31 @@ class SemanticChecker:
         return node.type
 
     def visit_bool(self, node):
+        node.type = "bool"
+        return node.type
+
+    def visit_block(self, node):
+        self.scopes.append({})
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit_node is not None:
+            node.exit_node.accept(self)
+        self.scopes.pop() 
+
+    def visit_if(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: the condition of 'if' must be bool, got {cond_type}")
+        node.then_block.accept(self)
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_not(self, node):
+        operand_type = node.operand.accept(self)
+        if operand_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: cannot apply '!' to {operand_type}")
         node.type = "bool"
         return node.type
 
@@ -717,10 +744,10 @@ def main_cli():
                     print(f"{tok.text!r} {tok.kind} {tok.line}:{tok.col}")
             return
         tree = Parser(token_lines).parse_program()
+        SemanticChecker().check(tree)
         if mode == "--ast":
             tree.dump()
             return
-        SemanticChecker().check(tree)
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)

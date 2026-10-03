@@ -67,11 +67,6 @@ class ProgramNode(Node):
     def children(self):
         return self.statements + [self.exit_node]
 
-    def codegen(self, builder):
-        for stmt in self.statements:
-            stmt.codegen(builder)
-        self.exit_node.codegen(builder)
-
     def accept(self, visitor):
         return visitor.visit_program(self)
 
@@ -93,13 +88,6 @@ class DeclNode(StmtNode):
     def children(self):
         return [self.init]
 
-    def codegen(self, builder):
-        llvm_ty = LLVM_TYPES[self.type_name]
-        value = self.init.codegen(builder)
-        value = coerce(builder, value, self.init.type, self.type_name)
-        self.ptr = builder.alloca(llvm_ty, name=self.name)
-        builder.store(value, self.ptr)
-
     def accept(self, visitor):
         return visitor.visit_decl(self)
 
@@ -116,11 +104,6 @@ class AssignNode(StmtNode):
     def children(self):
         return [self.value]
 
-    def codegen(self, builder):
-        value = self.value.codegen(builder)
-        value = coerce(builder, value, self.value.type, self.decl.type_name)
-        builder.store(value, self.decl.ptr)
-
     def accept(self, visitor):
         return visitor.visit_assign(self)
 
@@ -134,23 +117,6 @@ class ExitNode(Node):
 
     def children(self):
         return [self.value]
-
-    def codegen(self, builder):
-        value = self.value.codegen(builder)
-        printf = builder.module.get_global("printf")
-
-        if self.value.type == "bool":
-            fmt = builder.module.get_global("fmt_bool")
-            true_ptr = builder.bitcast(builder.module.get_global("true_str"), ir.PointerType(I8))
-            false_ptr = builder.bitcast(builder.module.get_global("false_str"), ir.PointerType(I8))
-            chosen = builder.select(value, true_ptr, false_ptr)
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), chosen])
-        else:
-            wide = coerce(builder, value, self.value.type, "i64")
-            fmt = builder.module.get_global("fmt")
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), wide])
-
-        builder.ret(ir.Constant(I32, 0))
 
     def accept(self, visitor):
         return visitor.visit_exit(self)
@@ -172,26 +138,6 @@ class BinOpNode(ExprNode):
     def children(self):
         return [self.left, self.right]
 
-    def codegen(self, builder):
-        lhs = self.left.codegen(builder)
-        rhs = self.right.codegen(builder)
-
-        if self.op in ("+", "-", "*"):
-            lhs = coerce(builder, lhs, self.left.type, self.type)
-            rhs = coerce(builder, rhs, self.right.type, self.type)
-            if self.op == "+":
-                return builder.add(lhs, rhs)
-            elif self.op == "-":
-                return builder.sub(lhs, rhs)
-            else:
-                return builder.mul(lhs, rhs)
-        else:
-            common = "i64" if "i64" in (self.left.type, self.right.type) else self.left.type
-            lhs = coerce(builder, lhs, self.left.type, common)
-            rhs = coerce(builder, rhs, self.right.type, common)
-            pred = "==" if self.op == "==" else "!="
-            return builder.icmp_signed(pred, lhs, rhs)
-
     def accept(self, visitor):
         return visitor.visit_binop(self)
 
@@ -203,9 +149,6 @@ class VarNode(ExprNode):
     def label(self):
         return f"Var {self.name}"
 
-    def codegen(self, builder):
-        return builder.load(self.decl.ptr)
-
     def accept(self, visitor):
         return visitor.visit_var(self)
 
@@ -215,10 +158,7 @@ class ConstNode(ExprNode):
         self.value = value
 
     def label(self):
-        return f"Const {self.value}"
-
-    def codegen(self, builder):
-        return ir.Constant(LLVM_TYPES[self.type], int(self.value))
+        return f"Const {int(self.value)}"
 
     def accept(self, visitor):
         return visitor.visit_const(self)
@@ -230,9 +170,6 @@ class BoolNode(ExprNode):
 
     def label(self):
         return f"Bool {'true' if self.value else 'false'}"
-
-    def codegen(self, builder):
-        return ir.Constant(I1, int(self.value))
 
     def accept(self, visitor):
         return visitor.visit_bool(self)
@@ -315,6 +252,79 @@ class SemanticChecker:
         raise CompileError(f"line {at.line}:{at.col}: cannot {what} of type {want} "
                             f"with a value of type {have}")
 
+class CodeGen:
+    def __init__(self, builder):
+        self.builder = builder
+        self.module = builder.module
+        self.function = builder.function
+
+    def generate(self, tree):
+        tree.accept(self)
+
+    def visit_program(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        node.exit_node.accept(self)
+
+    def visit_decl(self, node):
+        llvm_ty = LLVM_TYPES[node.type_name]
+        value = node.init.accept(self)
+        value = coerce(self.builder, value, node.init.type, node.type_name)
+        node.ptr = self.builder.alloca(llvm_ty, name=node.name)
+        self.builder.store(value, node.ptr)
+
+    def visit_assign(self, node):
+        value = node.value.accept(self)
+        value = coerce(self.builder, value, node.value.type, node.decl.type_name)
+        self.builder.store(value, node.decl.ptr)
+
+    def visit_exit(self, node):
+        value = node.value.accept(self)
+        printf = self.module.get_global("printf")
+
+        if node.value.type == "bool":
+            fmt = self.module.get_global("fmt_bool")
+            true_ptr = self.builder.bitcast(self.module.get_global("true_str"), ir.PointerType(I8))
+            false_ptr = self.builder.bitcast(self.module.get_global("false_str"), ir.PointerType(I8))
+            chosen = self.builder.select(value, true_ptr, false_ptr)
+            self.builder.call(printf, [self.builder.bitcast(fmt, ir.PointerType(I8)), chosen])
+        else:
+            wide = coerce(self.builder, value, node.value.type, "i64")
+            fmt = self.module.get_global("fmt")
+            self.builder.call(printf, [self.builder.bitcast(fmt, ir.PointerType(I8)), wide])
+
+        self.builder.ret(ir.Constant(I32, 0))
+
+    def visit_binop(self, node):
+        lhs = node.left.accept(self)
+        rhs = node.right.accept(self)
+
+        if node.op in ("+", "-", "*"):
+            lhs = coerce(self.builder, lhs, node.left.type, node.type)
+            rhs = coerce(self.builder, rhs, node.right.type, node.type)
+            if node.op == "+":
+                return self.builder.add(lhs, rhs)
+            elif node.op == "-":
+                return self.builder.sub(lhs, rhs)
+            else:
+                return self.builder.mul(lhs, rhs)
+        else:
+            common = "i64" if "i64" in (node.left.type, node.right.type) else node.left.type
+            lhs = coerce(self.builder, lhs, node.left.type, common)
+            rhs = coerce(self.builder, rhs, node.right.type, common)
+            pred = "==" if node.op == "==" else "!="
+            return self.builder.icmp_signed(pred, lhs, rhs)
+
+    def visit_var(self, node):
+        return self.builder.load(node.decl.ptr)
+
+    def visit_const(self, node):
+        return ir.Constant(LLVM_TYPES[node.type], int(node.value))
+
+    def visit_bool(self, node):
+        return ir.Constant(I1, int(node.value))
+
+
 def lex(data: bytes):
     lines, tokens = [], []
     state, start, start_line, start_col = "START", 0, 1, 1
@@ -332,7 +342,7 @@ def lex(data: bytes):
                 if brace_open:
                     raise CompileError(f"line {brace_line}:{brace_col}: '{{' is not closed before the end of the line")
                 break
-            elif b in (32, 9):
+            elif b in (32, 9, 13):
                 pass
             elif b == 10:
                 if brace_open:
@@ -631,7 +641,7 @@ def main_cli():
     false_str.initializer = ir.Constant(ir.ArrayType(I8, len(false_text)), bytearray(false_text))
 
     try:
-        tree.codegen(builder)
+        CodeGen(builder).generate(tree)
     except CompileError as e:
         print(f"compilation error: {e}", file=sys.stderr)
         sys.exit(1)

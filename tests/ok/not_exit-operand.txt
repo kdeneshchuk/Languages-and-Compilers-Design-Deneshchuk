@@ -1,0 +1,2 @@
+bool c{false}
+exit !c

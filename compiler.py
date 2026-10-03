@@ -337,6 +337,19 @@ class CodeGen:
         self.builder = builder
         self.module = builder.module
         self.function = builder.function
+        self.n_slots = 0
+
+    def new_slot(self, llvm_ty, name):
+        entry = self.function.entry_basic_block
+        saved = self.builder.block
+        if self.n_slots < len(entry.instructions):
+            self.builder.position_before(entry.instructions[self.n_slots])
+        else:
+            self.builder.position_at_end(entry)
+        ptr = self.builder.alloca(llvm_ty, name=name)
+        self.n_slots += 1
+        self.builder.position_at_end(saved)
+        return ptr
 
     def generate(self, tree):
         tree.accept(self)
@@ -350,7 +363,7 @@ class CodeGen:
         llvm_ty = LLVM_TYPES[node.type_name]
         value = node.init.accept(self)
         value = coerce(self.builder, value, node.init.type, node.type_name)
-        node.ptr = self.builder.alloca(llvm_ty, name=node.name)
+        node.ptr = self.new_slot(llvm_ty, node.name)
         self.builder.store(value, node.ptr)
 
     def visit_assign(self, node):
@@ -403,6 +416,35 @@ class CodeGen:
 
     def visit_bool(self, node):
         return ir.Constant(I1, int(node.value))
+
+    def visit_not(self, node):
+        return self.builder.not_(node.operand.accept(self))
+
+    def visit_block(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit_node is not None:
+            node.exit_node.accept(self)
+
+    def visit_if(self, node):
+        cond = node.condition.accept(self)
+        then_bb = self.function.append_basic_block("then")
+        else_bb = self.function.append_basic_block("else") if node.else_block else None
+        merge_bb = self.function.append_basic_block("merge")
+        self.builder.cbranch(cond, then_bb, else_bb or merge_bb)
+
+        self.builder.position_at_end(then_bb)
+        node.then_block.accept(self)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(merge_bb)
+
+        if else_bb is not None:
+            self.builder.position_at_end(else_bb)
+            node.else_block.accept(self)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
 
 
 def lex(data: bytes):

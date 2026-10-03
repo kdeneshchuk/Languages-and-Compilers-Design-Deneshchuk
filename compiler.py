@@ -16,7 +16,7 @@ KEYWORDS = {
     "i32": "keyword", "i64": "keyword", "bool": "keyword",
     "mut": "keyword", "exit": "keyword",
     "true": "keyword", "false": "keyword",
-    "if": "keyword", "else": "keyword",
+    "if": "keyword", "else": "keyword", "while": "keyword",
 }
 
 def is_alpha(b):
@@ -144,6 +144,21 @@ class IfNode(StmtNode):
 
     def accept(self, visitor):
         return visitor.visit_if(self)
+
+class WhileNode(StmtNode):
+    def __init__(self, line, col, condition, body):
+        super().__init__(line, col)
+        self.condition = condition
+        self.body = body
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.condition, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
 
 class ExitNode(Node):
     def __init__(self, line, col, value):
@@ -303,7 +318,7 @@ class SemanticChecker:
             stmt.accept(self)
         if node.exit_node is not None:
             node.exit_node.accept(self)
-        self.scopes.pop() 
+        self.scopes.pop()
 
     def visit_if(self, node):
         cond_type = node.condition.accept(self)
@@ -313,6 +328,13 @@ class SemanticChecker:
         node.then_block.accept(self)
         if node.else_block is not None:
             node.else_block.accept(self)
+
+    def visit_while(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: the condition of 'while' must be bool, got {cond_type}")
+        node.body.accept(self)
 
     def visit_not(self, node):
         operand_type = node.operand.accept(self)
@@ -425,6 +447,24 @@ class CodeGen:
             stmt.accept(self)
         if node.exit_node is not None:
             node.exit_node.accept(self)
+
+    def visit_while(self, node):
+        cond_bb = self.function.append_basic_block("while.cond")
+        body_bb = self.function.append_basic_block("while.body")
+        end_bb = self.function.append_basic_block("while.end")
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(cond_bb)
+        cond = node.condition.accept(self)
+        self.builder.cbranch(cond, body_bb, end_bb)
+
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(end_bb)
+
 
     def visit_if(self, node):
         cond = node.condition.accept(self)
@@ -712,12 +752,21 @@ class Parser:
             else_block = self.parse_block("'else'")
         return IfNode(if_tok.line, if_tok.col, condition, then_block, else_block)
 
+    def parse_while(self):
+        while_tok = self.eat()
+        condition = self.parse_expr()
+        self.expect_eol()
+        body = self.parse_block("'while'")
+        return WhileNode(while_tok.line, while_tok.col, condition, body)
+
     def parse_statement(self):
         tok = self.peek()
         if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
             return self.parse_decl()
         if tok.kind == "keyword" and tok.text == "if":
             return self.parse_if()
+        if tok.kind == "keyword" and tok.text == "while":
+            return self.parse_while()
         if tok.kind == "keyword" and tok.text == "else":
             self.error("'else' without an 'if'")
         if tok.kind == "ident":

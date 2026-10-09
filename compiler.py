@@ -302,6 +302,20 @@ class NotNode(ExprNode):
     def accept(self, visitor):
         return visitor.visit_not(self)
 
+class InitNode(ExprNode):
+    def __init__(self, line, col, items):
+        super().__init__(line, col)
+        self.items = items
+
+    def label(self):
+        return "Init"
+
+    def children(self):
+        return self.items
+
+    def accept(self, visitor):
+        return visitor.visit_init(self)
+
 class CallNode(ExprNode):
     def __init__(self, line, col, name, args):
         super().__init__(line, col)
@@ -442,18 +456,30 @@ class SemanticChecker:
         self.scopes[-1][node.name] = node
 
     def check_struct_init(self, node):
-        st = self.structs[node.type_name]
-        node.struct = st
-        for e in node.inits:
-            e.accept(self)
-        node.copy = len(node.inits) == 1 and node.inits[0].type == node.type_name
-        if node.copy:
-            return
-        if len(node.inits) != len(st.fields):
-            raise CompileError(f"line {node.lbrace.line}:{node.lbrace.col}: "
-                               f"'{node.type_name}' needs {len(st.fields)} value(s), got {len(node.inits)}")
-        for e, field in zip(node.inits, st.fields):
-            self.check_assignable(e, field.type_name, e, f"initialise field '{field.name}'")
+        node.struct = self.structs[node.type_name]
+        node.copy = self.check_values(node.inits, node.type_name, node.lbrace)
+
+    def check_values(self, items, type_name, brace):
+        st = self.structs[type_name]
+        for e in items:
+            if not isinstance(e, InitNode):
+                e.accept(self)
+        if len(items) == 1 and not isinstance(items[0], InitNode) and items[0].type == type_name:
+            return True
+        if len(items) != len(st.fields):
+            raise CompileError(f"line {brace.line}:{brace.col}: "
+                               f"'{type_name}' needs {len(st.fields)} value(s), got {len(items)}")
+        for e, field in zip(items, st.fields):
+            if isinstance(e, InitNode):
+                if field.type_name not in self.structs:
+                    raise CompileError(f"line {e.line}:{e.col}: field '{field.name}' of type "
+                                       f"{field.type_name} cannot take {{}}")
+                e.type = field.type_name
+                e.struct = self.structs[field.type_name]
+                e.copy = self.check_values(e.items, field.type_name, e)
+            else:
+                self.check_assignable(e, field.type_name, e, f"initialise field '{field.name}'")
+        return False
 
     def const_field(self, struct_name):
         for field in self.structs[struct_name].fields:
@@ -516,6 +542,9 @@ class SemanticChecker:
     def visit_member(self, node):
         node.decl, _, node.path, node.type = self.resolve_chain(node)
         return node.type
+
+    def visit_init(self, node):
+        raise CompileError(f"line {node.line}:{node.col}: '{{}}' can only initialise a field of a struct type")
 
     def visit_const(self, node):
         value = int(node.value)
@@ -728,6 +757,17 @@ class CodeGen:
     def visit_member(self, node):
         ptr = self.address_of(node.decl.ptr, node.path, node.name)
         return self.builder.load(ptr)
+
+    def visit_init(self, node):
+        values = [e.accept(self) for e in node.items]
+        if node.copy:
+            return values[0]
+        result = ir.Constant(self.ir_type(node.type), ir.Undefined)
+        for e, value, field in zip(node.items, values, node.struct.fields):
+            value = coerce(self.builder, value, e.type, field.type_name)
+            result = self.builder.insert_value(result, value, field.index,
+                                               name=f"{node.type}.{field.name}")
+        return result
 
     def visit_const(self, node):
         return ir.Constant(LLVM_TYPES[node.type], int(node.value))
@@ -1092,6 +1132,18 @@ class Parser:
             self.error("the body of a function must end with 'exit'", at=body)
         return FnNode(name_tok.line, name_tok.col, name_tok.text, params, ret_tok.text, body)
 
+    def parse_init_value(self):
+        brace = self.peek()
+        if brace is not None and brace.kind == "lbrace":
+            self.eat()
+            items = [self.parse_init_value()]
+            while (tok := self.peek()) is not None and tok.kind == "comma":
+                self.eat()
+                items.append(self.parse_init_value())
+            self.expect("rbrace", "'}'")
+            return InitNode(brace.line, brace.col, items)
+        return self.parse_expr()
+
     def parse_decl(self):
         type_tok = self.eat()
         type_name = type_tok.text
@@ -1105,10 +1157,10 @@ class Parser:
         if brace is None or brace.kind != "lbrace":
             self.error(f"variable '{name_tok.text}' needs an initialiser in {{}}", at=name_tok)
         self.eat()
-        inits = [self.parse_expr()]
+        inits = [self.parse_init_value()]
         while (tok := self.peek()) is not None and tok.kind == "comma":
             self.eat()
-            inits.append(self.parse_expr())
+            inits.append(self.parse_init_value())
         self.expect("rbrace", "'}'")
         return DeclNode(name_tok.line, name_tok.col, name_tok.text, type_name, mutable, inits, brace)
 

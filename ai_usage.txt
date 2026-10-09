@@ -1,203 +1,3715 @@
-AI USAGE LOG — Practice 4 (Languages and Compilers Design)
-Student: Khrystyna Deneshchuk
-Tool used: Claude (Anthropic), chat-based assistant, used interactively throughout the whole practice
-============================================================
-
-OVERVIEW
---------
-I used Claude as a step-by-step tutor/pair-programmer while extending the Practice 3
-compiler (Python + llvmlite) with:
-  1) new types i32 / i64 / bool and the == / != comparison operators (lexer + grammar + parser),
-  2) a separate semantic-analysis pass (SemanticChecker) that type-checks the AST
-     before code generation,
-  3) the corresponding LLVM codegen changes (widening/coercion, comparisons, bool exit).
-
-Workflow: I asked Claude to go through the practice task by task, explain each change
-line by line, and never add anything beyond what was asked without telling me first.
-I ran every command myself in my Ubuntu VM terminal and pasted the actual output back
-to Claude for review; Claude only saw what I pasted, it did not run anything on my
-machine itself.
+AI USAGE - PRACTICE 5
 
 ============================================================
-TASK 1 — Types (i32/i64/bool) and comparison operators (0.5 pt)
-============================================================
 
-Prompts (mine, paraphrased from the actual chat):
- - "давай тоді тепер йти поступово по практиці і розберемо цю частину" (+ pasted the
-   practice's language spec / Task 1 description)
- - "давай тепер розберемо це завдання"
- - "давай тепер покроково з поясненнями робити"
- - "ось що в мене є зараз, з чого починаємо?"
- - "давай покроково з поясненнями будемо робити"
- - "так" (confirming the proposed plan)
- - several short follow-up questions confirming exact insertion points and whether a
-   change matched the task description
+ось прочитай уважно
 
-What Claude proposed / I took as-is:
- - Added `i32`, `i64`, `bool`, `true`, `false` as new keywords in the lexer.
- - Added new lexer states for `==` and `!=` (previously the lexer only had `:=`),
-   with correct line:col error reporting for a lone `=` or `!`.
- - Extended grammar.ebnf: `type ::= "i32" | "i64" | "bool"`, `expr ::= arith [
-   ("==" | "!=") arith ]` (single, non-chainable comparison).
- - Added a `BoolNode` AST class and gave `DeclNode` a `type_name` field.
- - Updated the parser: `parse_factor` handles `true`/`false`; `parse_decl` records the
-   declared type; `parse_statement` accepts all three types; comparisons are parsed
-   with a single optional `if` (not `while`), matching the "no chaining" grammar rule.
- - Updated the 6 existing `.ast` snapshot files (from Practice 2/3) to include the
-   `i32` type annotation that decl/const nodes now carry.
 
-What I changed / pushed back on:
- - Nothing structurally — I asked Claude to only do exactly what Task 1 asked and not
-   start on semantic checking or codegen yet, so the diff stayed scoped to lexer +
-   grammar + parser + AST for this task.
- - Verified myself in the VM: ran `--ast` on the practice's example program and on two
-   intentionally malformed inputs (`a=1`, `!b`) to confirm the lexer errors point at
-   the right line:col.
+Прочитала всю Практику 5 (5 сторінок). Спершу виправлю себе: раніше я радила зробити ExitNode звичайним StmtNode, але за граматикою Практики 5 це неправильно.
 
-============================================================
-TASK 2 — Semantic checker / type checking pass (1.5 pt)
-============================================================
+program ::= { statement } exit
+block   ::= "{" NL { statement } [ exit NL ] "}" NL
+exit лишається окремим від statement. Block просто має необов'язкове поле exit, як ProgramNode.
 
-Prompts (mine, paraphrased):
- - "давай тепер розберемо це завдання" (Task 2 description pasted)
- - "так" (confirming plan)
- - many short clarifying questions while implementing (where to add a method, whether
-   a particular check was already covered by the task text, etc.)
- - "перевір чи все ми виконали по завданню 1 та 2 правильно"
- - "перевіряй дуже уважно чи виконали ми все по завданню і правильно"
+Що вимагає практика (3 бали + 0,5 бонус)
 
-What Claude proposed / I took as-is:
- - A visitor pattern: `accept(self, visitor)` added to every AST node, dispatching to
-   `visitor.visit_<node>`.
- - A new `SemanticChecker` class with its own symbol table (name -> DeclNode),
-   run as a separate pass between parsing and codegen.
- - The five type rules from the task: no redeclaration, no use-before-declaration, no
-   assignment to non-`mut` variables, only i32->i64 widening allowed (no narrowing, no
-   bool<->integer conversion in any direction), and `==`/`!=` only between two
-   comparable (matching bool-ness) operands.
- - Error messages with `line:col` pointing either at the assignment/declaration site,
-   or — specifically for an out-of-range constant — at the constant itself, since the
-   task expects the error location to make sense to a user reading the diagnostic.
+Task 1, 0,5 бала, front end. Нові ключові слова if та else, унарне !, блоки на кілька рядків, нові вузли If, Block, Not. Дужки { і } тепер парує парсер, а не лексер.
+Task 2, 1 бал, scope. Стек фреймів: декларація йде у верхній фрейм, пошук іде згори вниз, shadowing з будь-яким типом. Умова if має бути bool, ! теж застосовується лише до bool.
+Task 3, 1,5 бала, кодоген. Блоки then, else, merge, cbranch, усі alloca в entry, рівно один термінатор на блок, exit усередині гілки. Потім opt -passes=mem2reg і phi у виводі.
+Бонус while, +0,5. Блоки loop.cond, loop.body, loop.end і зворотне ребро. Нічого іншого не змінюється.
+Що це означає для твого коду
 
-Bug we found and fixed together:
- - All 8 new `accept()` methods had been copy-pasted from `ExitNode.accept` and all
-   called `visitor.visit_exit(self)` instead of their own `visit_<node>` method. Found
-   by grepping the file for `visit_exit`; fixed by replacing each occurrence in order
-   with the correct visit name.
- - The overflow-constant error initially reported the position of the variable name
-   instead of the constant when a stand-alone literal (e.g. `i32 x { 3000000000 }`)
-   didn't fit the declared width; added a specific branch in `check_assignable` for
-   this case so the diagnostic points at the constant.
+Лексер. Стан BANG зараз кидає помилку. Тепер після ! дивимось один байт: = дає !=, інакше емітимо ! і робимо continue, щоб перечитати цей байт. Перевірки brace_open на кінець рядка й кінець файлу треба прибрати. Їх замінюють помилки парсера ('{' is never closed, expected '}', found end of line). Помилка для i32 x{5 лишається, але тепер її видає парсер у тій самій позиції.
+Парсер. Курсор по токенах у рядку (peek/eat) лишається, поверх нього додається курсор по рядках (peek_line/next_line). Порожні рядки треба пропускати. parse_statement з'їдає один рядок, а для if це рядок умови, рядок {, усі рядки блоку, рядок } і за потреби else. Нові повідомлення: expected '{' on its own line after 'if', unexpected '{' after the statement, empty block, 'else' without an 'if', statement after 'exit' in the same block.
+Чекер. self.symbols стає self.scopes, списком словників. Перевірка already declared in this block дивиться лише у верхній фрейм. Дизайн із node.decl уже готовий до shadowing, бо кожна декларація є окремою нодою зі своїм ptr.
+Кодоген. Потрібен допоміжний метод new_slot: перемкнути builder на початок entry, зробити alloca, повернути builder назад. Перевірка builder.block.is_terminated перед br merge сумісна з твоїм ExitNode.codegen, який закінчується на ret. Код у тексті практики викликає self.function, self.builder і node.then_block.accept(self). Тобто вона припускає CodeGen як visitor, так само як і ревʼю радило. Тому рефакторинг перед Практикою 5 має сенс.
+Що треба уточнити, а не вгадувати
 
-What I changed / verified myself:
- - Ran the compiler against 9 different invalid programs (bool arithmetic, narrowing
-   on decl and on assign, bool<->int in both directions, overflow constant, bool vs
-   int compare, malformed `==`, chained comparison, operator after `exit`,
-   self-reference in initializer) and confirmed every message and line:col matched
-   what the task expects.
+Практика пише src/compiler.py, python3 check.py і «the check.py table». У тебе compiler.py у корені та run_tests.py. Не знаю, чи в Практиці 4 уже була така структура і чи вона обов'язкова. Якщо вимагається, check.py та src/ треба перейменувати. Що саме має друкувати «check.py table», у тексті не сказано, цього я не вигадуватиму.
+Лекція 5.2 казала, що else if це вкладений if. Граматика практики дозволяє лише else NL block, тобто else if на одному рядку не входить у завдання.
+Warm-up (які x до чого належать, що друкується, скільки фреймів і блоків) призначений для тебе самої. Можеш написати свої відповіді, я перевірю.
+Порядок, який я б радила: спершу рефакторинг CodeGen у visitor з run_tests.py на 61/61, потім Task 1, потім Task 2, потім Task 3, потім while. Так кожен крок можна перевірити окремо.
 
-============================================================
-TASK 3 — LLVM codegen: widening, comparisons, bool exit (1 pt)
-============================================================
+З чого починаємо: з рефакторингу чи зі warm-up?
 
-Prompts (mine, paraphrased):
- - "давай тепер розберемо це завдання" (Task 3 description pasted)
- - "так" (confirming plan)
- - "дай повний код на run_tests.py"
- - "перевіряй уважно файл тепер"
- - "де саме його вставити"
+Кроки 1–2 пройшли: git diff показує рівно два рядки, Const 7, Program exit with result 7, 61 passed, 0 failed. Перед кроком 3 перевіряю в себе, що рефакторинг не змінить згенерований IR.
 
-What Claude proposed / I took as-is:
- - Removed the old ad-hoc `symbols` dict used during codegen; `DeclNode` now stores
-   its own alloca pointer (`self.ptr`), and `VarNode`/`AssignNode` read/write through
-   `self.decl.ptr`, set earlier by the semantic pass.
- - A single `coerce(builder, value, have, want)` helper that emits `sext` only for
-   i32->i64, used in the 5 places that need it: variable initializer, assignment,
-   both operands of `+ - *`, both operands of `== !=`, and the exit value.
- - `LLVM_TYPES` mapping `i32/i64/bool` to `ir.IntType(32/64/1)`.
- - `BinOpNode` codegen split into two paths: arithmetic (coerce both sides to the
-   already-computed `node.type` from the semantic pass) vs. comparison (coerce both
-   sides to the wider of the two, then `icmp_signed`).
- - `ExitNode` codegen split on bool vs integer: integer exit values are widened to
-   i64 and printed with `%lld`; bool exit values are turned into `"true"/"false"`
-   global string constants via `builder.select` and printed with `%s`.
- - A completely new Python test runner (`run_tests.py`) replacing the old bash loop,
-   which compiles + runs each `tests/**/*.txt` with `lli`, compares stdout/stderr
-   against a `.expected` file, and separately diffs `--ast` output against `.ast`
-   snapshots.
+Рефакторинг я перевірила в себе: IR до і після байт у байт однаковий на п'яти програмах (Практика 4 дає 385, bool-exit дає false, а також пріоритет, порівняння змішаних типів і i64-константа). Робимо в три підкроки, і тести запускаємо після кожного.
 
-Bug we found and fixed together:
- - While hand-editing `main_cli()` in `nano` to add CLI argument validation, the
-   whole `try: lex/parse/SemanticChecker ... except CompileError` block got
-   accidentally deleted. Found by asking Claude to re-read the whole file carefully;
-   Claude pointed out exactly where the block used to sit and gave me the code to
-   restore it.
- - Closed the remaining open code-review items about CLI argument handling: unknown
-   flag now reports a clean error (`args[0].startswith("-")`) instead of a Python
-   traceback; refuses to run if the output path equals the input path (prevents
-   overwriting the source file); wrapped file-opening in `try/except OSError` for a
-   one-line error instead of a traceback on a missing input file.
+Крок 3.0: знімок «до»
 
-What I changed / verified myself:
- - Re-ran the full Practice 2/3 regression suite (32 old tests) plus the Task 1
-   worked example and the bool-exit example after every codegen change, to make sure
-   nothing that used to pass broke.
+bash
+mkdir -p /tmp/before /tmp/after
+for f in tests/ok/*.txt; do python3 compiler.py $f /tmp/before/$(basename $f .txt).ll; done
+ls /tmp/before | wc -l
+Цикл компілює всі валідні тести й складає їхній IR у /tmp/before. Остання команда має показати 12. Наприкінці порівняємо з тим, що вийде після рефакторингу.
 
-============================================================
-FINAL REVIEW / TEST-COVERAGE PASS
-============================================================
+Крок 3a: додаємо клас CodeGen (старий код ще не чіпаємо)
 
-Prompts (mine, paraphrased):
- - "переглянь тепер фінально чи все ми зробили правильно по завданню нічого не
-   забули"
- - "ми тестами все покрили? можливо є якісь додаткові дірки які ми не перевірили і
-   краще тести теж додати"
- - pasted both code-review comment threads from Practice 2 and Practice 3 and asked
-   "ці питання закрили? окрім ші юзедж"
+bash
+cat > /tmp/codegen_snippet.py << 'EOF'
+class CodeGen:
+    def __init__(self, builder):
+        self.builder = builder
+        self.module = builder.module
+        self.function = builder.function
 
-What Claude found and I acted on:
- - Compared the finished implementation against the full practice PDF text
-   (including the warm-up exercise and the exact submission requirements) and
-   confirmed nothing from the spec was missed.
- - Identified 5 gaps in test coverage that I then added:
-     - `!=` was never exercised (only `==`) -> added `compare_not_equal.txt`.
-     - the i32->i64 widening coercion on plain assignment (`:=`) was never exercised
-       with a real width change -> added `widen_assign.txt`.
-     - values above 2^31 (where a missing `sext` would silently produce a wrong,
-       truncated number) were never exercised -> added `above_two_billion.txt`.
-     - `bool` through `AssignNode`, and the `false` branch of the `select` in the
-       bool-exit codegen, were never exercised -> added `bool_assign.txt`.
-     - missing negative tests for "two chained comparisons" and "an operator right
-       after `exit`" -> added `double_comparison.txt` and `exit_operation.txt`, plus
-       `self_reference.txt` for using a variable in its own initializer.
- - Went through both review threads (Practice 2 review, Practice 3 review, both
-   passes) point by point and confirmed every item was addressed by the current code,
-   with the single exception of this file (ai_usage.txt), which the reviewer asked
-   for explicitly on three separate occasions.
+    def generate(self, tree):
+        tree.accept(self)
 
-Final test result (verified by me, in my own VM):
- 61 passed, 0 failed
- (32 tests carried over from Practice 2/3, 12 new `tests/ok/*`, 11 new `tests/err/*`,
- 6 `.ast` snapshot tests)
+    def visit_program(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        node.exit_node.accept(self)
 
-============================================================
-SUMMARY: WHAT WAS TAKEN AS-IS vs. WHAT I CHANGED
-============================================================
-Taken mostly as-is (after I reviewed and understood it):
- - The overall visitor-pattern structure for the semantic pass.
- - The `coerce()` helper and where its 5 call sites live.
- - The split of `BinOpNode` codegen into arithmetic vs. comparison paths.
- - The `run_tests.py` test runner.
+    def visit_decl(self, node):
+        llvm_ty = LLVM_TYPES[node.type_name]
+        value = node.init.accept(self)
+        value = coerce(self.builder, value, node.init.type, node.type_name)
+        node.ptr = self.builder.alloca(llvm_ty, name=node.name)
+        self.builder.store(value, node.ptr)
 
-Changed / driven by me:
- - The scope and pace of every step — I explicitly asked Claude not to implement more
-   than the current task, and to explain each change before I typed/ran it.
- - All actual code execution, test running, and reading of output happened in my own
-   terminal; I pasted results back for review rather than letting the assistant run
-   anything for me.
- - The decision of which additional tests to add after the coverage discussion above.
- - Manual edits in `nano` (which caused the accidentally-deleted block, later fixed
-   together).
+    def visit_assign(self, node):
+        value = node.value.accept(self)
+        value = coerce(self.builder, value, node.value.type, node.decl.type_name)
+        self.builder.store(value, node.decl.ptr)
 
-Not used for: writing the practice's language specification, the grading rubric, or
-any part of the report/README not related to this compiler.
+    def visit_exit(self, node):
+        value = node.value.accept(self)
+        printf = self.module.get_global("printf")
+
+        if node.value.type == "bool":
+            fmt = self.module.get_global("fmt_bool")
+            true_ptr = self.builder.bitcast(self.module.get_global("true_str"), ir.PointerType(I8))
+            false_ptr = self.builder.bitcast(self.module.get_global("false_str"), ir.PointerType(I8))
+            chosen = self.builder.select(value, true_ptr, false_ptr)
+            self.builder.call(printf, [self.builder.bitcast(fmt, ir.PointerType(I8)), chosen])
+        else:
+            wide = coerce(self.builder, value, node.value.type, "i64")
+            fmt = self.module.get_global("fmt")
+            self.builder.call(printf, [self.builder.bitcast(fmt, ir.PointerType(I8)), wide])
+
+        self.builder.ret(ir.Constant(I32, 0))
+
+    def visit_binop(self, node):
+        lhs = node.left.accept(self)
+        rhs = node.right.accept(self)
+
+        if node.op in ("+", "-", "*"):
+            lhs = coerce(self.builder, lhs, node.left.type, node.type)
+            rhs = coerce(self.builder, rhs, node.right.type, node.type)
+            if node.op == "+":
+                return self.builder.add(lhs, rhs)
+            elif node.op == "-":
+                return self.builder.sub(lhs, rhs)
+            else:
+                return self.builder.mul(lhs, rhs)
+        else:
+            common = "i64" if "i64" in (node.left.type, node.right.type) else node.left.type
+            lhs = coerce(self.builder, lhs, node.left.type, common)
+            rhs = coerce(self.builder, rhs, node.right.type, common)
+            pred = "==" if node.op == "==" else "!="
+            return self.builder.icmp_signed(pred, lhs, rhs)
+
+    def visit_var(self, node):
+        return self.builder.load(node.decl.ptr)
+
+    def visit_const(self, node):
+        return ir.Constant(LLVM_TYPES[node.type], int(node.value))
+
+    def visit_bool(self, node):
+        return ir.Constant(I1, int(node.value))
+
+
+EOF
+python3 - << 'EOF'
+s = open("compiler.py").read()
+snippet = open("/tmp/codegen_snippet.py").read()
+anchor = "def lex(data: bytes):"
+assert s.count(anchor) == 1
+open("compiler.py", "w").write(s.replace(anchor, snippet + anchor))
+EOF
+python3 run_tests.py | tail -1
+Що тут відбувається:
+
+Це та сама логіка, що була в codegen() кожної ноди, але зібрана в один клас. node.xxx береться з параметра, а builder стає self.builder.
+node.init.accept(self) повертає значення visit_* дочірньої ноди. Тому visit_binop, visit_var, visit_const і visit_bool повертають LLVM-значення, а statement-ноди нічого.
+self.function = builder.function у Практиці 5 знадобиться для append_basic_block("then").
+node.ptr лишається полем ноди, як і було. Це не змінює поведінку.
+Останній рядок запускає тести. Клас поки не викликається, тож очікую 61 passed, 0 failed.
+Крок 3b: перемикаємо виклик
+
+bash
+sed -i 's/tree\.codegen(builder)/CodeGen(builder).generate(tree)/' compiler.py
+git diff | grep -n "generate"
+python3 run_tests.py | tail -1
+Це єдиний рядок у main_cli, де раніше викликався tree.codegen(builder). Тепер працює новий клас, а старі методи в нодах уже мертві. Очікую знову 61 passed, 0 failed.
+
+Крок 3c: прибираємо мертві codegen() з нод
+
+Це 8 однотипних видалень, тому робимо одноразовим скриптом у /tmp (не в репозиторії). Він знаходить методи codegen лише в класах *Node і вирізає їх.
+
+bash
+cat > /tmp/strip.py << 'EOF'
+import ast
+src = open("compiler.py").read()
+lines = src.split("\n")
+tree = ast.parse(src)
+spans = []
+for cls in tree.body:
+    if isinstance(cls, ast.ClassDef) and cls.name.endswith("Node"):
+        for item in cls.body:
+            if isinstance(item, ast.FunctionDef) and item.name == "codegen":
+                spans.append((item.lineno, item.end_lineno))
+for start, end in sorted(spans, reverse=True):
+    del lines[start - 1:end]
+    if start - 1 < len(lines) and lines[start - 1] == "":
+        del lines[start - 1]
+open("compiler.py", "w").write("\n".join(lines))
+print(f"removed {len(spans)} codegen methods")
+EOF
+python3 /tmp/strip.py
+grep -n "def codegen\|\.codegen(" compiler.py || echo "no codegen left"
+python3 run_tests.py | tail -1
+Очікую removed 8 codegen methods, no codegen left і 61 passed, 0 failed.
+
+Крок 3.final: порівняння IR «до» і «після»
+
+bash
+for f in tests/ok/*.txt; do python3 compiler.py $f /tmp/after/$(basename $f .txt).ll; done
+diff -r /tmp/before /tmp/after && echo IDENTICAL
+git diff --stat
+IDENTICAL означає, що рефакторинг не змінив жодного байта згенерованого IR. Після цього зробимо один коміт.
+
+Скинь мені вивід кроків 3.0 (кількість файлів), run_tests.py | tail -1 після кожного підкроку і фінал (IDENTICAL та git diff --stat). Якщо будь-який крок не дасть очікуваного результату, зупинись на ньому й покажи вивід.
+
+це що ми зараз робимо? який крок 3
+Small things: --ast prints a constant as written, so i32 x{007} shows Const 007; a file with \r\n line endings is rejected with unexpected byte '\r'. Code generation lives in codegen() methods on the nodes while the checker is a visitor; giving CodeGen the same visitor shape will make the next pass easier.
+
+Це три зауваження ревʼюера, які ми закриваємо одним комітом перед Практикою 5.
+
+Зауваження	Що це	Статус
+1. Const 007	--ast друкує число як написано	зроблено (кроки 1–2)
+2. \r\n	файл із Windows-переносами рядків відхиляється	зроблено (кроки 1–2)
+3. CodeGen як visitor	остання фраза ревʼю	це крок 3
+Крок 3 стосується цієї фрази: «Code generation lives in codegen() methods on the nodes while the checker is a visitor; giving CodeGen the same visitor shape will make the next pass easier».
+
+Зараз у тебе два способи обходити дерево:
+
+Чекер це окремий клас SemanticChecker з методами visit_decl, visit_binop тощо. Ноди лише викликають accept.
+Кодоген живе в самих нодах, у методах codegen() (по одному на кожну ноду).
+Крок 3 переносить кодоген з нод у окремий клас CodeGen з такими самими visit_*, як у чекера. Програма після цього робить рівно те саме, змінюється лише місце, де лежить код. Саме тому ми порівнюємо IR «до» і «після», і він має бути байт у байт однаковий.
+
+Навіщо це зараз: у Практиці 5 код прикладів уже виглядає як self.function.append_basic_block(...) і node.then_block.accept(self). Тобто вона розрахована на CodeGen як visitor, у якого є self.builder і self.function. Інакше if довелося б додавати в codegen() нод, а потім переписувати.
+
+Це не вимога завдання і балів за нього немає, просто порада ревʼю. Можна пропустити крок 3 і закомітити лише дві правки. Тоді в Практиці 5 доведеться або робити цей рефакторинг пізніше, або писати нові codegen() у нодах, а ревʼюер, імовірно, знову це згадає. Я б його зробила, бо він малий і перевіряється тестами.
+
+Робимо крок 3 чи комітимо тільки правки 1–2?
+
+А розкажи ще раз про кроки 1-2
+
+
+Кроки 1–2 це були дві дрібні правки з ревʼю (крок 1) і перевірка, що вони працюють (крок 2).
+
+Крок 1: два однорядкові виправлення
+
+Const 007 → Const 7.
+Було: ConstNode.label друкував self.value, а це текст токена. Для 007 виходило Const 007.
+Стало: return f"Const {int(self.value)}". int("007") дає 7.
+Значення в самій програмі не змінилось, бо чекер і кодоген і так брали int(node.value). Змінився лише підпис у дампі --ast.
+\r\n більше не помилка.
+Було: у стані START лексера пропусками вважалися лише пробіл (байт 32) і таб (9). Файл із Windows-переносом рядка закінчується байтами \r\n (13, 10). \n лексер розумів, а \r ні, і видавав unexpected byte '\r'.
+Стало: elif b in (32, 9, 13):. Тепер \r ігнорується як пропуск, і файл читається однаково з \n та \r\n.
+
+Обидві правки зробила команда sed -i (замінила один рядок у файлі). Ти перевірила це через git diff: змінено рівно два рядки (рядок 217 і рядок 335).
+
+Крок 2: перевірка
+
+printf 'i32 x{007}\r\nexit x\r\n' > /tmp/crlf.txt створив тестовий файл: число 007 і Windows-переноси.
+--ast надрукував Const 7, отже правка 1 працює, а відсутність помилки на \r підтверджує правку 2.
+lli дав Program exit with result 7: програма справді компілюється й запускається.
+run_tests.py дав 61 passed, 0 failed: старі тести нічого не зламали.
+
+Помилка No module named 'llvmlite' була не з коду: у тому терміналі не було активованого virtualenv. Після source ~/lcd/bin/activate усе пішло.
+
+Підсумок: пункти 1 і 2 з ревʼю закриті й перевірені, у робочій папці лежать дві зміни, які ще не закомічені. Лишився пункт 3 (CodeGen як visitor). Робимо його чи комітимо ці дві правки зараз?
+
+NO DIFFERENCES: на всіх тестах у трьох режимах (компіляція, --ast, --tokens) новий компілятор поводиться так само, як старий. Збігаються stdout, stderr, код виходу й IR.
+
+Одна поправка від мене: я казала, що в /tmp/diffcheck.sh має бути 22 рядки, але правильно 18. Це моя помилка, а не проблема з твоєю вставкою. У мене на копії скрипт теж має 18 рядків.
+
+Щоб переконатись, що скрипт справді вміє знаходити різницю, а не просто мовчки друкує NO DIFFERENCES, зроби «контрольну» перевірку. Вона створює дві програми, на яких старий і новий компілятор мають відрізнятись, а потім видаляє їх:
+
+bash
+wc -l /tmp/diffcheck.sh
+printf 'i32 x{007}\nexit x\n' > tests/zz_tmp.txt
+printf 'i32 y{1}\r\nexit y\r\n' > tests/zz_crlf.txt
+bash /tmp/diffcheck.sh
+rm tests/zz_tmp.txt tests/zz_crlf.txt
+git status --short
+
+Очікую 18, потім рядки DIFF ...: для zz_tmp.txt лише [--ast] (бо Const 007 став Const 7), для zz_crlf.txt усі чотири (старий компілятор відхиляє \r\n, новий приймає). Це саме ті дві правки з ревʼю. Останній git status --short має показати лише M compiler.py, без файлів zz_*.
+
+Якщо контроль показав такі різниці, перевірка надійна, і можна комітити:
+
+bash
+git add compiler.py
+git commit -m "Review fixes: Const as int in --ast, accept CRLF, CodeGen as visitor"
+git log --oneline -2
+
+Якщо контроль нічого не показав, не комітимо, спершу розберемось, чому скрипт «сліпий».
+
+(lcd) ubuntu@lcd-course:~/repo$ bash /tmp/diffcheck.sh
+NO DIFFERENCES
+(lcd) ubuntu@lcd-course:~/repo$ wc -l /tmp/diffcheck.sh
+18 /tmp/diffcheck.sh
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 x{007}\nexit x\n' > tests/zz_tmp.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 y{1}\r\nexit y\r\n' > tests/zz_crlf.txt
+(lcd) ubuntu@lcd-course:~/repo$ bash /tmp/diffcheck.sh
+rm tests/zz_tmp.txt tests/zz_crlf.txt
+git status --shortDIFF IR: tests/zz_crlf.txt
+DIFF output: [] tests/zz_crlf.txt
+DIFF output: [--ast] tests/zz_crlf.txt
+DIFF output: [--tokens] tests/zz_crlf.txt
+DIFF output: [--ast] tests/zz_tmp.txt
+(lcd) ubuntu@lcd-course:~/repo$ rm tests/zz_tmp.txt tests/zz_crlf.txt
+(lcd) ubuntu@lcd-course:~/repo$ git status --short
+ M compiler.py
+(lcd) ubuntu@lcd-course:~/repo$
+
+Контроль показав саме ті різниці, які мали бути:
+
+zz_tmp.txt відрізняється лише в --ast (Const 007 стало Const 7).
+zz_crlf.txt відрізняється в усіх чотирьох (старий компілятор відхиляв \r\n, новий приймає).
+Решта 61+ програм без жодної різниці.
+
+Скрипт не «сліпий», NO DIFFERENCES на справжніх тестах означає, що поведінка не змінилась. Тимчасові файли видалені, git status показує лише M compiler.py.
+
+Тепер коміт:
+
+bash
+git add compiler.py
+git commit -m "Review fixes: Const as int in --ast, accept CRLF, CodeGen as visitor"
+git log --oneline -2
+
+Потім, якщо хочеш, щоб гілка була на GitHub:
+
+bash
+git push -u origin practice-5
+
+Далі переходимо до самої Практики 5. Спершу warm-up на папері: для програми з вкладеними x напиши, яка декларація до якого exit належить, що друкується, чи досяжний останній exit, скільки фреймів пушить семантичний прохід і скільки basic blocks потрібно в IR. Напиши свої відповіді, і я перевірю. Або одразу беремось за Task 1 (if, else і ! у лексері). Що обираєш?
+
+Pasted text.txt
+TXT
+
+окей я зробила
+ось оновлений код
+давай тепер розбирати це завдання
+TASK 1 — BLOCKS IN THE FRONT END (0.5 POINTS)
+The language
+i32 mut a{10}
+bool b{true}
+if b
+{
+a := a + 5
+}
+else
+{
+a := a - 5
+}
+exit a
+Expected: Program exit with result 15.
+• if and its condition stand on one line; {, } and else stand alone on theirs; else is optional; a block holds at
+least one line.
+• A block may end with exit — as its last line. Nothing follows an exit inside the same block, and nothing
+follows the program’s last exit.
+• Blocks nest: an if is a statement, so it may stand inside a block.
+• ! negates a bool: bool c{!a}, d := !c, if !c, exit !c. Spaces after ! are optional. ! applies to the factor
+right after it: !a == b compares !a with b. Parentheses and unary minus are still not in the language.
+The ! operator on its own — the second program of the week:
+bool a{true}
+bool b{false}
+bool c{!a}
+bool mut d{! b}
+d := !c
+if !c
+{
+exit d
+}
+exit 0
+Expected: Program exit with result true.
+Lexer
+if and else are keywords. After ! the machine looks at one byte: = makes !=, anything else makes ! and is read
+again — the same move as the byte that ends an identifier. And the Practice 2 rule that { must close on its line
+leaves the lexer: { and } are plain tokens now, and the parser pairs them. i32 x{5 is still an error — the parser’s,
+at the same position.
+Grammar and tree
+program ::= { statement } exit
+statement ::= decl | assign | if
+if ::= "if" expr NL block [ "else" NL block ]
+block ::= "{" NL { statement } [ exit NL ] "}" NL (not empty)
+factor ::= number | "true" | "false" | ident | "!" factor
+NL is the end of a line. A statement was a line; an if is several. Give the parser a line cursor next to the token
+cursor: peek_line looks at the next line, next_line makes it the current one. parse_statement consumes one
+line — or, for if, the condition line, the { line, every line of the block and the } line. Two new nodes: If (condition,
+then-block, optional else-block) and Block (statements, optional exit); one new expression node, Not. The dump
+of the nested program above:
+Program
+Decl x i32 mut
+Const 10
+If
+Bool true
+Block
+Decl x bool mut
+Bool true
+If
+Var x
+Block
+Decl x i64 mut
+Const 20
+Exit
+Var x
+Exit
+Var x
+Exit
+Var x
+Errors the parser reports
+• line 4:1: expected '{' on its own line after 'if', got 'a'
+• line 2:6: unexpected '{' after the statement — for if b {
+• line 2:1: empty block · line 2:1: 'else' without an 'if' · line 2:1: '{' is never closed
+• line 4:5: statement after 'exit' in the same block · line 1:8: expected '}', found end
+of line
+Show: --ast for the warm-up program; three of the errors above with line:column.
+
+
+
+Що вимагає Task 1 (0,5 бала)
+
+Лише front end: лексер, парсер, AST. Семантики й IR у цьому таску немає. Результат перевіряється командою --ast.
+
+Нові слова: if, else (ключові слова) і оператор !.
+Блоки на кілька рядків: if умова на одному рядку, { окремим рядком, потім рядки блоку, } окремим рядком, за потреби else окремим рядком і ще один блок. Блок не порожній, може закінчуватись exit, а if може бути вкладеним.
+! застосовується до наступного factor: !a == b це (!a) == b.
+Парування { і } переходить від лексера до парсера.
+Що це означає для твого коду
+Частина	Зміна
+Лексер	if і else у KEYWORDS; стан BANG видає !, якщо далі не =; вся логіка brace_open зникає
+AST	три нові вузли: NotNode, IfNode, BlockNode
+Парсер	! у parse_factor; курсор по рядках (peek_line/next_line); parse_if, parse_block; нові повідомлення
+main_cli	див. питання нижче
+Три рішення, які треба винести (я вирішувати не буду)
+
+1. --ast і чекер. Зараз main_cli спершу запускає SemanticChecker, і лише потім друкує дерево. Але warm-up, який ти маєш показати через --ast, містить shadowing (x тричі), а плоска таблиця symbols кине already declared. Крім того, у чекера ще немає visit_if. Простий вихід: друкувати дерево одразу після парсингу, до чекера. Так було в Практиці 3 («prints the tree»). Побічний ефект: --ast більше не відхиляє семантично некоректні програми. Твоє рішення.
+
+2. Позиція для i32 x{5. У тексті завдання сказано «the parser's, at the same position», але в списку помилок явно line 1:8: expected '}', found end of line. Колись лексер давав 1:6. Я перевірила: після прибирання лексерної перевірки твій парсер вже дає саме 1:8, як у списку. Тест test_unterminated_brace.expected через це зміниться.
+
+3. Повідомлень немає в списку: if без наступного рядка в кінці файлу, зайві токени після {, після } чи після else. Тут текст за тобою, а позицію логічно брати на першому токені, який ламає правило.
+
+План Task 1 (підкроки 1.1–1.6)
+Лексер (if/else, !, без парування дужок).
+Нові вузли AST.
+! у парсері.
+Курсор по рядках.
+parse_if і parse_block з помилками.
+--ast і перевірка warm-up та трьох помилок.
+
+Після кожного підкроку тести й коміт наприкінці таску, як і раніше («Task 1»).
+
+Крок 1.1: лексер
+
+Редагуємо в VS Code, три місця. Спершу перелік ключових слів.
+
+A. KEYWORDS, було:
+
+python
+    "true": "keyword", "false": "keyword",
+}
+
+стало:
+
+python
+    "true": "keyword", "false": "keyword",
+    "if": "keyword", "else": "keyword",
+}
+
+Лексер впізнає слово після того, як воно дочитане, а потім шукає його в словнику. Тож нові ключові слова додаються лише сюди.
+
+B. Лексер більше не парує дужки. Прибери все, що пов'язане з brace_open, у п'яти місцях:
+
+На початку lex два рядки: brace_open = False і brace_line = brace_col = None.
+У START, гілка if b is None:: видали if brace_open: raise ..., лишиться лише break.
+У гілці elif b == 10: видали if brace_open: raise ..., лишиться lines.append(tokens) і далі.
+У гілці { видали два рядки brace_open = True і brace_line, brace_col = line, col.
+У гілці } видали рядок brace_open = False.
+
+Тепер { і } це звичайні односимвольні токени, як +. Перевіряти, закрита дужка чи ні, буде парсер.
+
+C. Стан BANG, було:
+
+python
+            else:
+                raise CompileError(f"line {start_line}:{start_col}: expected '!='")
+
+стало:
+
+python
+            else:
+                tokens.append(Token("operator", "!", start_line, start_col))
+                state = "START"
+                continue
+
+Після ! дивимось один байт. Якщо =, виходить !=, і це вже було. Інакше це самостійний !: видаємо токен, повертаємось у START і continue, тобто не рухаємо i і col. Байт, що завершив токен, перечитується в START. Це той самий прийом, що в стані IDENT.
+
+Перевірка
+
+bash
+printf 'if !b\n{\n  a := a - 5\n}\nelse\n' > /tmp/t1.txt
+python3 compiler.py --tokens /tmp/t1.txt
+printf 'bool c{!a}\nbool mut d{! b}\nz := !a == b\ny := a != b\nx := !!a\n' > /tmp/t2.txt
+python3 compiler.py --tokens /tmp/t2.txt
+printf 'i32 x{5\nexit x\n' > /tmp/t3.txt
+python3 compiler.py --tokens /tmp/t3.txt
+python3 run_tests.py | grep -A3 FAIL
+
+Очікую:
+
+У t1: 'if' keyword 1:1, '!' operator 1:4, 'b' ident 1:5, '{' lbrace 2:1, ... і в кінці 'else' keyword 5:1.
+У t2: ! окремий токен (1:8, 2:12), '!=' operator один токен, а !!a два окремі ! (5:6 і 5:7).
+У t3: токени виводяться без помилки.
+run_tests.py: очікую рівно один FAIL, test_unterminated_brace (там був старий лексерний текст). Не виправляй його поки, просто скинь мені цей FAIL.
+
+Скинь вивід цих чотирьох команд і git diff --stat.
+
+
+(lcd) ubuntu@lcd-course:~/repo$ printf 'if !b\n{\n  a := a - 5\n}\nelse\n' > /tmp/t1.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --tokens /tmp/t1.txt
+compilation error: line 2:1: '{' is not closed before the end of the line
+(lcd) ubuntu@lcd-course:~/repo$ printf 'bool c{!a}\nbool mut d{! b}\nz := !a == b\ny := a != b\nx := !!a\n' > /tmp/t2.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --tokens /tmp/t2.txt
+'bool' keyword 1:1
+'c' ident 1:6
+'{' lbrace 1:7
+'!' operator 1:8
+'a' ident 1:9
+'}' rbrace 1:10
+'bool' keyword 2:1
+'mut' keyword 2:6
+'d' ident 2:10
+'{' lbrace 2:11
+'!' operator 2:12
+'b' ident 2:14
+'}' rbrace 2:15
+'z' ident 3:1
+':=' operator 3:3
+'!' operator 3:6
+'a' ident 3:7
+'==' operator 3:9
+'b' ident 3:12
+'y' ident 4:1
+':=' operator 4:3
+'a' ident 4:6
+'!=' operator 4:8
+'b' ident 4:11
+'x' ident 5:1
+':=' operator 5:3
+'!' operator 5:6
+'!' operator 5:7
+'a' ident 5:8
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 x{5\nexit x\n' > /tmp/t3.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --tokens /tmp/t3.txt
+compilation error: line 1:6: '{' is not closed before the end of the line
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | grep -A3 FAIL
+(lcd) ubuntu@lcd-course:~/repo$
+
+Ran a command
+Крок 1.2 готовий: усі три класи на місці, compiled-ok, 61 passed, 0 failed.
+
+Крок 1.3: ! у парсері (і --ast без чекера)
+Це два маленькі редагування в compiler.py. Другу частину я радила в рішенні 1: без неї --ast не покаже Not, бо чекер ще не вміє visit_not і впаде. Якщо ти з тим рішенням не згодна, скажи, і ми підемо іншим шляхом.
+
+A. parse_factor. Знайди кінець методу, було:
+
+python
+        if tok.kind == "ident":
+            self.eat()
+            return VarNode(tok.line, tok.col, tok.text)
+        self.error(f"expected a constant or a variable, got '{tok.text}'")
+стало:
+
+python
+        if tok.kind == "ident":
+            self.eat()
+            return VarNode(tok.line, tok.col, tok.text)
+
+        if tok.kind == "operator" and tok.text == "!":
+            self.eat()
+            return NotNode(tok.line, tok.col, self.parse_factor())
+        self.error(f"expected a constant or a variable, got '{tok.text}'")
+Що відбувається:
+
+За граматикою factor ::= ... | "!" factor. Правило посилається на себе, тому метод викликає сам себе: !!a дає Not(Not(a)).
+! прив'язується до factor, який іде одразу після нього, а не до всього виразу. Тому !a == b виходить як (!a) == b: parse_expr спершу доходить до parse_factor, той повертає Not(a), а потім уже бачить ==.
+exit !c працює без змін, бо parse_exit викликає parse_factor.
+Позиція NotNode це позиція !, як у завданні.
+B. --ast до чекера (у main_cli). Було:
+
+python
+        tree = Parser(token_lines).parse_program()
+        SemanticChecker().check(tree)
+стало:
+
+python
+        tree = Parser(token_lines).parse_program()
+        if mode == "--ast":
+            tree.dump()
+            return
+        SemanticChecker().check(tree)
+І далі в тому ж файлі видали старий блок (він стояв перед module = ir.Module(...)):
+
+python
+    if mode == "--ast":
+        tree.dump()
+        return
+Тепер --ast друкує дерево одразу після парсингу, як у Практиці 3. Побічний ефект, про який я попереджала: програма з семантичною помилкою (наприклад, невідома змінна) під --ast тепер друкує дерево, а не помилку. Звичайна компіляція поводиться як раніше.
+
+Перевірка
+
+bash
+python3 -m py_compile compiler.py && echo compiled-ok
+printf 'bool a{true}\nbool b{false}\nbool c{!a}\nbool mut d{! b}\nd := !c\nbool e{!a == b}\nbool f{!!a}\nexit !c\n' > /tmp/n1.txt
+python3 compiler.py --ast /tmp/n1.txt
+printf 'bool c{!}\nexit c\n' > /tmp/n2.txt
+python3 compiler.py --ast /tmp/n2.txt
+python3 run_tests.py | tail -1
+Очікую:
+
+У дереві Decl c bool const має Not з дочірнім Var a.
+Decl e bool const має BinOp == з двома дітьми: першою Not (з Var a), другою Var b.
+Decl f має Not усередині Not, а Exit теж містить Not над Var c.
+Для n2: compilation error: line 1:9: expected a constant or a variable, got '}'.
+Тести: 61 passed, 0 failed.
+Скинь вивід. Далі буде крок 1.4: курсор по рядках у парсері (peek_line/next_line).
+
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && echo compiled-ok
+compiled-ok
+(lcd) ubuntu@lcd-course:~/repo$ printf 'bool a{true}\nbool b{false}\nbool c{!a}\nbool mut d{! b}\nd := !c\nbool e{!a == b}\nbool f{!!a}\nexit !c\n' > /tmp/n1.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --ast /tmp/n1.txt
+Program
+  Decl a bool const
+    Bool true
+  Decl b bool const
+    Bool false
+  Decl c bool const
+    Not
+      Var a
+  Decl d bool mut
+    Not
+      Var b
+  Assign d
+    Not
+      Var c
+  Decl e bool const
+    BinOp ==
+      Not
+        Var a
+      Var b
+  Decl f bool const
+    Not
+      Not
+        Var a
+  Exit
+    Not
+      Var c
+(lcd) ubuntu@lcd-course:~/repo$ printf 'bool c{!}\nexit c\n' > /tmp/n2.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --ast /tmp/n2.txt
+compilation error: line 1:9: expected a constant or a variable, got '}'
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+Крок 1.3 готовий: Not у дереві там, де треба (!a == b це (!a) == b, !!a це Not(Not(a))), помилка 1:9 збігається, 61/61.
+
+Крок 1.4: курсор по рядках у парсері
+Зараз parse_program ходить по self.lines циклом for, і кожен statement це рівно один рядок. if займає кілька рядків, тому парсеру потрібен курсор по рядках, який можна пересувати з будь-якого методу (з parse_if, parse_block). Цей крок нічого не змінює в поведінці: це рефакторинг, який має лишити всі 61 тест зеленими. Я перевірила в себе: старий і новий парсер видають однаковий результат на 20+ програмах у трьох режимах.
+
+A. Parser.__init__. Було:
+
+python
+    def __init__(self, lines):
+        self.lines, self.toks, self.pos = lines, [], 0
+стало:
+
+python
+    def __init__(self, lines):
+        self.lines, self.toks, self.pos = lines, [], 0
+        self.line_idx = 0
+
+    def peek_line(self):
+        while self.line_idx < len(self.lines) and not self.lines[self.line_idx]:
+            self.line_idx += 1
+        if self.line_idx < len(self.lines):
+            return self.lines[self.line_idx]
+        return None
+
+    def next_line(self):
+        toks = self.peek_line()
+        if toks is None:
+            return None
+        self.line_idx += 1
+        self.toks, self.pos = toks, 0
+        return toks
+
+    def expect_eol(self):
+        tok = self.peek()
+        if tok is not None:
+            self.error(f"unexpected '{tok.text}' after the statement")
+Що тут нового:
+
+line_idx це індекс наступного непрочитаного рядка. Токенний курсор (toks, pos) лишається для поточного рядка.
+peek_line() дивиться на наступний непорожній рядок, не з'їдаючи його. Порожні рядки пропускаються: лексер дає для них порожні списки, а мова дозволяє порожні рядки будь-де.
+next_line() робить цей рядок поточним (toks, pos = 0) і повертає його. Якщо рядків більше нема, повертає None, а toks лишається попереднім, повністю прочитаним рядком. Це важливо для позиції помилки «знайдено кінець рядка».
+expect_eol() це перевірка «в рядку нічого не лишилось». Раніше вона була вбудована в parse_program, а тепер знадобиться ще в кількох місцях.
+B. parse_program. Було:
+
+python
+        stmts, exit_node, last_line = [], None, 1
+        for line_no, toks in enumerate(self.lines, start=1):
+            if not toks:
+                continue
+            last_line = line_no
+            self.toks, self.pos = toks, 0
+
+            if exit_node is not None:
+                self.error("no statements are allowed after 'exit'")
+
+            first = self.peek()
+            if first.kind == "keyword" and first.text == "exit":
+                exit_node = self.parse_exit()
+            else:
+                stmts.append(self.parse_statement())
+
+            if self.peek() is not None:
+                bad = self.peek()
+                self.error(f"unexpected '{bad.text}' after the statement")
+
+        if exit_node is None:
+стало:
+
+python
+        stmts, exit_node, last_line = [], None, 1
+        while self.next_line() is not None:
+            if exit_node is not None:
+                self.error("no statements are allowed after 'exit'")
+
+            first = self.peek()
+            if first.kind == "keyword" and first.text == "exit":
+                exit_node = self.parse_exit()
+            else:
+                stmts.append(self.parse_statement())
+
+            self.expect_eol()
+            last_line = self.toks[0].line
+
+        if exit_node is None:
+Усе після цього (raise CompileError(... missing 'exit' ...) і return ProgramNode(...)) лишається без змін. Що змінилось:
+
+Цикл for по рядках замінено на while self.next_line() is not None: рядок береться тоді, коли метод вирішив його взяти.
+Перевірка «зайвих токенів у кінці» тепер викликає expect_eol().
+last_line береться з токена self.toks[0].line, тобто з останнього обробленого рядка. Для if на кілька рядків це буде рядок закриваючої }, а не рядок, на якому if починався.
+Перевірка
+
+bash
+python3 -m py_compile compiler.py && echo compiled-ok
+python3 run_tests.py | tail -1
+printf '\n\ni32 x{1}\n\n\nexit x\n\n' > /tmp/bl.txt
+python3 compiler.py --ast /tmp/bl.txt
+printf 'i32 x{1}\nexit x\ni32 y{2}\n' > /tmp/ae.txt
+python3 compiler.py /tmp/ae.txt /tmp/x.ll
+Очікую: compiled-ok, 61 passed, 0 failed, дерево з Decl x i32 const і Exit (порожні рядки пропущено), а для останньої програми compilation error: line 3:1: no statements are allowed after 'exit'.
+
+Скинь вивід. Далі буде крок 1.5: parse_if і parse_block з усіма помилками з завдання.
+
+
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && echo compiled-ok
+compiled-ok
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ printf '\n\ni32 x{1}\n\n\nexit x\n\n' > /tmp/bl.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --ast /tmp/bl.txt
+Program
+  Decl x i32 const
+    Const 1
+  Exit
+    Var x
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 x{1}\nexit x\ni32 y{2}\n' > /tmp/ae.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/ae.txt /tmp/x.ll
+compilation error: line 3:1: no statements are allowed after 'exit'
+(lcd) ubuntu@lcd-course:~/repo$
+
+
+Перевірила кожну умову Task 1 на твоєму файлі (5f832101-attachment.txt). Увесь код Task 1 відповідає завданню. Нижче перелік умов і те, чим я їх перевіряла.
+
+Перевірка по умовах
+Умова з тексту	Статус	Чим перевірено
+if і умова на одному рядку	✅	if з умовою на наступному рядку дає expected a constant or a variable, found end of line
+{, }, else стоять самі на рядку	✅	{ exit 1, } exit, else { і else x дають unexpected '...' after the statement
+else необов'язковий	✅	if без else у дампі й у вкладених випадках
+Блок не порожній (≥ 1 рядок)	✅	порожній блок і блок із самих порожніх рядків дають empty block
+Блок може закінчуватись exit	✅	блок лише з exit приймається
+Після exit у блоці нічого	✅	line 4:5: statement after 'exit' in the same block
+Після останнього exit програми нічого, зокрема if	✅	no statements are allowed after 'exit'
+Блоки вкладаються, else прив'язується до найближчого if	✅	перевірила обидва варіанти (else після внутрішнього і після зовнішнього блоку)
+! перед a, ! b, !!!a, if !c, exit !c, d := !c	✅	усі парсяться, у дампі Not у потрібних місцях
+!a == b це (!a) == b	✅	BinOp == з Not зліва
+Дужки й унарний мінус не в мові	✅	(a) це unexpected byte '(', -a і !-a дають expected a constant or a variable
+if/else ключові слова, але iffy і elsewhere звичайні імена	✅	розбір iffy != elsewhere
+{ і } це звичайні токени, дужки парує парсер	✅	зайві } і { дають помилки парсера
+i32 x{5 це помилка парсера	✅	line 1:8: expected '}', found end of line
+Усі 7 помилок зі списку, з тими самими line:col	✅	перевірила ще раз на твоєму файлі
+Дамп вкладеної програми, дві програми тижня	✅	розминка збігається з дампом із тексту, друга програма (з !) парситься
+Курсор по рядках peek_line / next_line	✅	імена збігаються з текстом
+Вузли If, Block, Not	✅	поля й позиції як у завданні
+CRLF, що ми додали ще до практики, теж працює всередині блоків.
+
+Що ще потребує твоєї уваги
+Task 1 ще не закомічений. У попередньому виводі git status показував два змінених файли. Команди коміту я давала вище: git add compiler.py tests/test_unterminated_brace.expected, потім git commit -m "Task 1: ...".
+Позиція для i32 x{5. У тексті завдання сказано «at the same position», а в списку помилок явно line 1:8. Я обрала 1:8 зі списку, і твій код дає саме його. Якщо хочеш уточнити, спитай викладача.
+Файли здачі не збігаються з твоєю структурою (це не Task 1, але легко забути). Практика пише src/compiler.py, python3 check.py і «the check.py table». У тебе compiler.py у корені та run_tests.py. Я не знаю, чи check.py це файл, який дає викладач, чи його має написати ти, і що саме він друкує. Це треба вияснити до здачі.
+.ast-файли для нових програм. Здача вимагає «.ast files for the new programs», а їх у нас ще немає. Їх зручно зробити разом із тестами в Task 3.
+ai_usage.txt. Ще не оновлений: ревʼю-правки й Task 1.
+Рішення про --ast без чекера. Усе ще відкрите, і воно зворотне (див. моє попереднє повідомлення).
+Чого ця перевірка не покриває: усе перевірено через --ast, тобто парсинг. Семантику й IR для if і ! додамо в Task 2 і Task 3, тож звичайна компіляція таких програм поки падає з AttributeError, і це очікувано.
+
+Коміт Task 1 робимо зараз?
+
+так
+
+Коміт Task 1:
+
+bash
+python3 run_tests.py | tail -1
+git status --short
+git add compiler.py tests/test_unterminated_brace.expected
+git commit -m "Task 1: if/else, ! and blocks in the front end"
+git log --oneline -3
+git push
+run_tests.py | tail -1 має показати 61 passed, 0 failed (раніше в першому рядку обрізалась цифра 6, це перевірка, що там усе правильно).
+git status --short має показати рівно два змінені файли: M compiler.py і M tests/test_unterminated_brace.expected.
+Коміт зафіксує обидва файли, а git push відправить гілку на GitHub (вона вже відстежує origin/practice-5).
+Скинь вивід git log. Якщо git status покаже щось зайве, наприклад файли zz_* або інші M, спершу напиши мені.
+
+Далі Task 2. Скажи, коли готова, і я розберу його так само, як Task 1: що вимагається, що це означає для твого чекера, рішення, які треба винести, і перший крок.
+
+
+lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ git status --short
+git status --short
+ M compiler.py
+ M tests/test_unterminated_brace.expected
+ M compiler.py
+ M tests/test_unterminated_brace.expected
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+[вкладення: compiler.py після кроку 2.1]
+правильно?
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Так, крок 2.1 зроблено правильно. У твоєму файлі:
+
+- `self.scopes = [{}]` і `lookup` йдуть зверху вниз по стеку.
+- `visit_decl` перевіряє дублікат тільки в `scopes[-1]` і пише теж туди. Нове повідомлення: "is already declared in this block".
+- `visit_assign` і `visit_var` ходять через `lookup`.
+
+Перш ніж іти далі, закрий перевірку 2.1:
+
+```bash
+cd ~/repo && source ~/lcd/bin/activate
+grep -n "symbols" compiler.py          # має бути порожньо
+python3 -m py_compile compiler.py
+python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+cat tests/test_redeclaration.expected  # має містити "is already declared in this block"
+python3 run_tests.py | tail -3         # 61 passed, 0 failed
+```
+
+## Крок 2.2: `visit_block`, `visit_if`, `visit_not`
+
+Додай три методи в `SemanticChecker`, наприклад після `visit_bool`:
+
+```python
+    def visit_block(self, node):
+        self.scopes.append({})          # новий кадр на вході в блок
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit_node is not None:
+            node.exit_node.accept(self)
+        self.scopes.pop()               # кадр зникає на виході
+
+    def visit_if(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: the condition of 'if' must be bool, got {cond_type}")
+        node.then_block.accept(self)
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_not(self, node):
+        operand_type = node.operand.accept(self)
+        if operand_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: cannot apply '!' to {operand_type}")
+        node.type = "bool"
+        return node.type
+```
+
+Що тут важливо:
+- Кадр створюється для кожного блоку окремо. Тому `then` і `else` не бачать змінних одне одного, а змінна з блоку не видна після `}`.
+- `ProgramNode` лишається на глобальному кадрі `scopes[0]`.
+- Умова `if` має бути саме `bool`. `if x` з `i32` має давати помилку.
+
+Перевірка:
+
+```bash
+python3 -m py_compile compiler.py && python3 run_tests.py | tail -3
+```
+
+Має бути `61 passed`. Старі тести блоків не містять, тому вони не зламаються.
+
+Коли це пройде, пиши "готово". Далі крок 2.3: перенесемо `--ast` після чекера і перевіримо п'ять помилок із завдання та warm-up.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+(lcd) ubuntu@lcd-course:~/repo$ cat tests/test_redeclaration.expected
+compilation error: line 2:5: variable 'x' already declared
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -3 
+PASS  tests/test_precedence_middle.ast
+
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Тести проходять, але `.expected` ти щойно перегенерувала зі старим текстом. Тобто компілятор досі видає "variable 'x' already declared", а не "is already declared in this block". Отже, нове повідомлення в `visit_decl` не потрапило у файл на VM. Імовірно, зміна не збереглася або повідомлення живе в іншому місці.
+
+Перевір:
+
+```bash
+grep -n "already declared" compiler.py
+```
+
+Там має бути один рядок з "is already declared in this block". Якщо бачиш старий текст, дві можливості:
+
+1. Рядок у `visit_decl` ще старий. Заміни його на:
+   ```python
+   raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is already declared in this block")
+   ```
+2. У `visit_decl` вже нове повідомлення, а старе є ще десь (наприклад, у `parse_*`). Тоді покажи мені вивід `grep`.
+
+Також перевір, що правки збереглися. У VS Code на вкладці файлу не має бути крапки, і файл на VM має збігатися з тим, що ти бачиш:
+
+```bash
+grep -n "scopes\|symbols" compiler.py
+```
+
+Має бути `self.scopes`, `scopes[-1]` і ніяких `symbols`.
+
+Після виправлення перегенеруй очікуваний вивід і перевір:
+
+```bash
+python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+cat tests/test_redeclaration.expected   # line 2:5: variable 'x' is already declared in this block
+python3 run_tests.py | tail -1          # 61 passed, 0 failed
+```
+
+Пришли вивід `grep -n "already declared" compiler.py`, якщо щось не збігається.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ grep -n "already declared" compiler.py
+245:            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' already declared")
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Це варіант 1: рядок 245 у `visit_decl` ще зі старим текстом. Заміни його однією командою:
+
+```bash
+sed -i "245s/already declared\")/is already declared in this block\")/" compiler.py
+sed -n '243,247p' compiler.py
+```
+
+У виводі `sed -n` рядок 245 має закінчуватися на `is already declared in this block")`. Також переконайся, що перед ним `if node.name in self.scopes[-1]:` (рядок 244).
+
+Далі перегенеруй `.expected` і запусти тести:
+
+```bash
+python3 -m py_compile compiler.py
+python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+cat tests/test_redeclaration.expected
+python3 run_tests.py | tail -1
+```
+
+Очікую `compilation error: line 2:5: variable 'x' is already declared in this block` і `61 passed, 0 failed`.
+
+Потім переходь до кроку 2.2 (`visit_block`, `visit_if`, `visit_not`).
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ sed -i "245s/already declared\")/is already declared in this block\")/" compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ sed -n '243,247p' compiler.py
+    def visit_decl(self, node):
+        if node.name in self.symbols:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is already declared in this block")
+        node.init.accept(self)
+        self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+(lcd) ubuntu@lcd-course:~/repo$ cat tests/test_redeclaration.expected
+compilation error: line 2:5: variable 'x' is already declared in this block
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Повідомлення тепер нове, але рядок 244 досі `if node.name in self.symbols:`. Отже, правки 2.1 з файлу, який ти мені присилала, на VM не потрапили. Імовірно, у VS Code вони не збережені, або ти редагувала іншу копію. `py_compile` цього не ловить, бо `self.symbols` синтаксично коректний.
+
+Подивимося, що саме є у файлі на VM:
+
+```bash
+grep -n "symbols\|scopes\|def lookup" compiler.py
+```
+
+Очікування: тут мають бути тільки `scopes` і `def lookup`, без жодного `symbols`.
+
+Якщо там лишився `symbols`, спершу перевір VS Code. Якщо вкладка `compiler.py` має крапку або білий кружок, натисни Ctrl+S. Якщо ти редагувала файл локально, а не на VM, правки треба перенести. Пришли мені вивід `grep`, і я дам точні команди заміни, як зробив для рядка 245.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ grep -n "symbols\|scopes\|def lookup" compiler.py
+233:        self.scopes = [{}]
+238:    def lookup(self, node, name):
+239:        for frame in reversed(self.scopes):
+250:        if node.name in self.scopes[-1]:
+254:        self.scopes[-1][node.name] = node
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Тепер у файлі все правильно: `scopes`, `lookup`, `scopes[-1]` і жодного `symbols`. Схоже, ти зберегла правки вже після моєї `sed`-команди. Тому `.expected` перегенеровувався ще зі старою версією файлу. Перевіримо ще раз на актуальному коді:
+
+```bash
+sed -n '248,255p' compiler.py
+grep -n "already declared" compiler.py
+python3 -m py_compile compiler.py
+python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+cat tests/test_redeclaration.expected
+python3 run_tests.py | tail -1
+```
+
+Очікую:
+- у `visit_decl` перший рядок `if node.name in self.scopes[-1]:`;
+- `grep` знаходить один рядок із "is already declared in this block";
+- у `.expected` `compilation error: line 2:5: variable 'x' is already declared in this block`;
+- `61 passed, 0 failed`.
+
+Якщо все так, крок 2.1 закритий. Тоді додавай `visit_block`, `visit_if` і `visit_not` з мого попереднього повідомлення (крок 2.2).
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+lcd) ubuntu@lcd-course:~/repo$ sed -n '248,255p' compiler.py
+
+    def visit_decl(self, node):
+        if node.name in self.scopes[-1]:
+            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is already declared in this block")
+        node.init.accept(self)
+        self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
+        self.scopes[-1][node.name] = node
+
+(lcd) ubuntu@lcd-course:~/repo$ grep -n "already declared" compiler.py
+251:            raise CompileError(f"line {node.line}:{node.col}: variable '{node.name}' is already declared in this block")
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py tests/test_redeclaration.txt /tmp/x.ll 2> tests/test_redeclaration.expected
+(lcd) ubuntu@lcd-course:~/repo$ cat tests/test_redeclaration.expected
+compilation error: line 2:5: variable 'x' is already declared in this block
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Крок 2.1 закритий: `visit_decl` перевіряє тільки `scopes[-1]`, повідомлення нове, `.expected` оновлено, тести дають `61 passed, 0 failed`.
+
+## Крок 2.2: додай три методи в `SemanticChecker`
+
+Встав їх після `visit_bool`, перед `check_assignable`, або будь-де всередині класу:
+
+```python
+    def visit_block(self, node):
+        self.scopes.append({})          # новий кадр на вході в блок
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit_node is not None:
+            node.exit_node.accept(self)
+        self.scopes.pop()               # кадр зникає на виході
+
+    def visit_if(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: the condition of 'if' must be bool, got {cond_type}")
+        node.then_block.accept(self)
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_not(self, node):
+        operand_type = node.operand.accept(self)
+        if operand_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: cannot apply '!' to {operand_type}")
+        node.type = "bool"
+        return node.type
+```
+
+Збережи файл (Ctrl+S) і перевір:
+
+```bash
+grep -n "def visit_block\|def visit_if\|def visit_not" compiler.py
+python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+```
+
+`grep` має показати ці три методи в `SemanticChecker`. У `CodeGen` їх ще не буде, їх додамо в Task 3. Тести мають дати `61 passed`.
+
+Коли пройде, пиши "готово", і підемо на 2.3: перенесемо `--ast` після чекера і перевіримо п'ять помилок із завдання та warm-up.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+поясни цей крок
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+## Навіщо цей крок
+
+У кроці 2.1 ми замінили одну плоску таблицю змінних на **стек кадрів** (`self.scopes`). Але поки що ніхто не додає в нього нові кадри. Кадр `scopes[0]` глобальний, і єдиний, що існує. Крок 2.2 вчить чекер **відкривати кадр, коли заходить у `{ ... }`, і закривати, коли виходить**.
+
+## Як працює стек
+
+```
+i32 mut x = 1          # scopes = [ {x} ]
+if cond
+{                      # visit_block: append({})  ->  [ {x}, {} ]
+    i32 y = 2          #                              [ {x}, {y} ]
+    x = y              # lookup('x') іде зверху вниз: {y} -> {x}, знайшов
+}                      # pop()                    ->  [ {x} ]
+y = 3                  # lookup('y'): у {x} немає -> помилка "used before its declaration"
+```
+
+Тобто змінна, оголошена в блоці, зникає після `}`. Внутрішній блок бачить зовнішні змінні, а зовнішній внутрішніх не бачить.
+
+## Що робить кожен метод
+
+**`visit_block`**
+- `scopes.append({})` створює порожній кадр для цього блоку.
+- Потім обходить `statements`, а в кінці `exit_node`, якщо він є. Усе це відбувається всередині нового кадру.
+- `scopes.pop()` видаляє кадр. Після цього всі змінні блоку забуті.
+- Кожен блок має свій власний кадр. Тому `then` і `else` не бачать змінних одне одного: після `then` кадр знято, а для `else` створено новий.
+
+**`visit_if`**
+- `node.condition.accept(self)` повертає тип умови. Це працює, бо `visit_var`, `visit_binop` і `visit_bool` вже повертають тип.
+- Якщо тип не `bool`, кидаємо помилку з позицією `if`. Це та помилка зі завдання: `if x` з `i32` не можна.
+- Далі перевіряємо `then_block`, а `else_block` лише якщо він існує (він необов'язковий).
+
+**`visit_not`**
+- Перевіряє, що операнд `!` має тип `bool`. Для `!5` кидає помилку "cannot apply '!' to i32".
+- Записує `node.type = "bool"` і повертає його. Результат `!` завжди `bool`, і так він може стояти в умові `if` або у виразі.
+
+## Чому це правильно саме так
+
+- **Shadowing працює «безкоштовно».** У внутрішньому блоці можна оголосити `x`, навіть якщо `x` є зовні. Дубль перевіряється лише в `scopes[-1]`, тобто тільки в поточному блоці. Це вже зроблено в 2.1.
+- **Помилка про використання до оголошення** теж працює. Якщо змінну оголосили в блоці, а використали після `}`, `lookup` не знайде її: кадр уже знятий.
+- **Пам'ять про «кому належить змінна»** лишається в `node.decl`. Пізніше CodeGen бере `node.decl.ptr`, тому вкладені блоки не потребують додаткового коду для імен.
+
+Якщо хочеш, можу пояснити окремо, чому `pop()` потрібен навіть у разі помилки, або показати приклад із shadowing. Або вставляй методи й пиши "готово", тоді підемо на 2.3.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ grep -n "def visit_block\|def visit_if\|def visit_not" compiler.py
+300:    def visit_block(self, node):
+308:    def visit_if(self, node):
+317:    def visit_not(self, node):
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Крок 2.2 закритий. Для 2.3 мені потрібні точні програми з тексту завдання, щоб позиції помилок збігалися. Дивлюся їх у PDF.
+
+Тепер у мене є точні програми. Крок 2.3 складається з двох частин. Спочатку правимо `--ast`: зараз він друкує дерево до чекера, а в завданні `--ast` показується для програм, які пройшли семантику.
+
+```bash
+grep -n "SemanticChecker().check\|mode == \"--ast\"\|tree.dump" compiler.py
+```
+
+Пришли вивід. Тоді я скажу, який рядок куди перенести, без здогадок про номери.
+
+Паралельно створи п'ять програм з помилками і warm-up у тимчасовій папці, поки не в `tests/`. Відступи по 4 пробіли в блоках потрібні, бо від них залежать колонки в помилках:
+
+```bash
+mkdir -p /tmp/t5 && cd /tmp/t5
+printf 'i32 x{5}\nif x\n{\n    exit 1\n}\nexit 0\n' > e1_cond.txt
+printf 'i32 x{5}\nbool b{!x}\nexit 0\n' > e2_not.txt
+printf 'if true\n{\n    i32 inner{1}\n}\nexit inner\n' > e3_scope.txt
+printf 'if true\n{\n    i32 a{1}\n    i32 a{2}\n}\nexit 0\n' > e4_redecl.txt
+printf 'i32 mut x{1}\nif true\n{\n    bool mut x{true}\n    x := 5\n}\nexit x\n' > e5_assign.txt
+printf 'i32 mut x{10}\nif true\n{\n    bool mut x{true}\n    if x\n    {\n        i64 mut x{20}\n        exit x\n    }\n    exit x\n}\nexit x\n' > warmup.txt
+ls; cd ~/repo
+```
+
+Очікувані помилки:
+- `e1_cond`: `line 2:1: the condition of 'if' must be bool, got i32`
+- `e2_not`: `line 2:8: cannot apply '!' to i32`
+- `e3_scope`: `line 5:6: variable 'inner' is used before its declaration`
+- `e4_redecl`: `line 4:9: variable 'a' is already declared in this block`
+- `e5_assign`: `line 5:5: cannot assign to 'x' of type bool with a value of type i32`
+
+Warm-up має пройти без помилок.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ grep -n "SemanticChecker().check\|mode == \"--ast\"\|tree.dump" compiler.py
+747:        if mode == "--ast":
+748:            tree.dump()
+750:        SemanticChecker().check(tree)
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Подивимося, що навколо цих рядків, перш ніж міняти:
+
+```bash
+sed -n '744,753p' compiler.py
+```
+
+Очікую приблизно таке:
+
+```python
+        if mode == "--ast":
+            tree.dump()
+            return
+        ...
+        SemanticChecker().check(tree)
+```
+
+Пришли вивід `sed`. Мені треба побачити точні відступи і що стоїть між рядками 749 і 750. Тоді я дам одну команду, яка переносить `SemanticChecker().check(tree)` перед `if mode == "--ast":`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ sed -n '744,753p' compiler.py
+                    print(f"{tok.text!r} {tok.kind} {tok.line}:{tok.col}")
+            return
+        tree = Parser(token_lines).parse_program()
+        if mode == "--ast":
+            tree.dump()
+            return
+        SemanticChecker().check(tree)
+    except CompileError as e:
+        print(f"compilation error: {e}", file=sys.stderr)
+        sys.exit(1)
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Блок простий. Треба поставити рядок 750 перед рядком 747. Однією командою:
+
+```bash
+sed -i '750d' compiler.py && sed -i '746a\        SemanticChecker().check(tree)' compiler.py
+sed -n '746,751p' compiler.py
+```
+
+Результат має бути такий:
+
+```python
+        tree = Parser(token_lines).parse_program()
+        SemanticChecker().check(tree)
+        if mode == "--ast":
+            tree.dump()
+            return
+    except CompileError as e:
+```
+
+Тепер `--ast` показує тільки програми, які пройшли семантику, а помилки типів і областей видимості виводяться в обох режимах.
+
+Перевір, що код компілюється, а не-AST тести не зламалися:
+
+```bash
+python3 -m py_compile compiler.py
+python3 run_tests.py | grep -c FAIL
+python3 run_tests.py | tail -1
+```
+
+Побічний ефект: `.ast`-снапшоти, що розраховані на програми з семантичною помилкою, можуть тепер падати. Якщо `FAIL` не нуль, пришли мені рядки з `FAIL`. Це очікувана зміна, і треба вирішити, що робити з цими тестами.
+
+Якщо `FAIL` нуль, запускай п'ять програм і warm-up:
+
+```bash
+for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+```
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ sed -i '750d' compiler.py && sed -i '746a\        SemanticChecker().check(tree)' compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ sed -n '746,751p' compiler.py
+        tree = Parser(token_lines).parse_program()
+        SemanticChecker().check(tree)
+        if mode == "--ast":
+            tree.dump()
+            return
+    except CompileError as e:
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | grep -c FAIL
+0
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+61 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ 
+
+поясни цей крок
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+## Що ми зробили
+
+Ми поміняли місцями два рядки в `main_cli`.
+
+**Було:**
+```python
+tree = Parser(token_lines).parse_program()
+if mode == "--ast":
+    tree.dump()        # друкуємо дерево...
+    return
+SemanticChecker().check(tree)   # ...а перевірка тільки після
+```
+
+**Стало:**
+```python
+tree = Parser(token_lines).parse_program()
+SemanticChecker().check(tree)   # спочатку семантика
+if mode == "--ast":
+    tree.dump()
+    return
+```
+
+## Чому це потрібно
+
+**1. `--ast` має показувати лише коректні програми.**
+Раніше `--ast` зупинявся одразу після парсера, тому семантичні помилки не ловилися. У завданні сказано: "Show: `--ast` for the warm-up program" (його треба показати і прийняти). А п'ять програм з помилками мають бути відхилені з `line:column`. Тепер усі режими поводяться однаково: `--ast` і звичайна компіляція відхиляють однакові програми.
+
+**2. Чекер ставить `node.decl` і `node.type`.**
+`dump()` друкує дерево вже після того, як чекер пройшов по ньому. Метод `visit_not` записує `node.type`, а `visit_var` і `visit_assign` ставлять `node.decl`. Для поточних міток дампа (`Var x`, `Const 10`) це нічого не змінює, але порядок правильний: дерево показується в тому стані, в якому його побачить кодогенератор.
+
+**3. Помилки йдуть через ту саму обробку.**
+`SemanticChecker` кидає `CompileError`. Він ловиться в тому самому `try/except`, який друкує `compilation error: ...` у stderr і виходить з кодом 1. Нічого додатково писати не треба.
+
+## Що показала перевірка
+
+`py_compile` пройшов, і `run_tests.py` дав `61 passed, 0 failed` без жодного `FAIL`. Тобто жоден існуючий `.ast`-тест не покладався на дамп до чекера. Нічого не зламалося.
+
+Раніше, при переносі `--ast` перед чекером, ми бачили зайві `DIFF` у diffcheck, бо `--ast` для програм з семантичними помилками раніше проходив. Тепер це повертається назад: `--ast` на такій програмі видасть помилку, і це правильно.
+
+## Що далі
+
+Запусти п'ять програм із помилками і warm-up:
+
+```bash
+for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+```
+
+Пришли вивід, і я звірю повідомлення і позиції з завданням.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+== /tmp/t5/e*.txt
+cannot read /tmp/t5/e*.txt: No such file or directory
+(lcd) ubuntu@lcd-course:~/repo$ echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+== warmup
+cannot read /tmp/t5/warmup.txt: No such file or directory
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Файлів немає, бо ти не запускала блок зі створенням програм. Я надіслав його раніше, але він, схоже, не виконався. Запусти його зараз, окремо:
+
+```bash
+mkdir -p /tmp/t5
+cd /tmp/t5
+printf 'i32 x{5}\nif x\n{\n    exit 1\n}\nexit 0\n' > e1_cond.txt
+printf 'i32 x{5}\nbool b{!x}\nexit 0\n' > e2_not.txt
+printf 'if true\n{\n    i32 inner{1}\n}\nexit inner\n' > e3_scope.txt
+printf 'if true\n{\n    i32 a{1}\n    i32 a{2}\n}\nexit 0\n' > e4_redecl.txt
+printf 'i32 mut x{1}\nif true\n{\n    bool mut x{true}\n    x := 5\n}\nexit x\n' > e5_assign.txt
+printf 'i32 mut x{10}\nif true\n{\n    bool mut x{true}\n    if x\n    {\n        i64 mut x{20}\n        exit x\n    }\n    exit x\n}\nexit x\n' > warmup.txt
+cd ~/repo
+ls /tmp/t5
+```
+
+У `ls` має бути шість файлів: `e1_cond.txt`, `e2_not.txt`, `e3_scope.txt`, `e4_redecl.txt`, `e5_assign.txt`, `warmup.txt`. Потім запусти перевірку:
+
+```bash
+for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+```
+
+Пришли вивід, і я звірю повідомлення з завданням.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ ls /tmp/t5
+e1_cond.txt  e2_not.txt  e3_scope.txt  e4_redecl.txt  e5_assign.txt  warmup.txt
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Файли створені. Тепер запусти перевірку:
+
+```bash
+for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+```
+
+Очікую п'ять повідомлень із такими позиціями: `2:1`, `2:8`, `5:6`, `4:9`, `5:5`. Для warm-up має бути `ACCEPTED`. Пришли вивід.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ for f in /tmp/t5/e*.txt; do echo "== $f"; python3 compiler.py $f /tmp/x.ll; done
+== /tmp/t5/e1_cond.txt
+compilation error: line 2:1: the condition of 'if' must be bool, got i32
+== /tmp/t5/e2_not.txt
+compilation error: line 2:8: cannot apply '!' to i32
+== /tmp/t5/e3_scope.txt
+compilation error: line 5:6: variable 'inner' is used before its declaration
+== /tmp/t5/e4_redecl.txt
+compilation error: line 4:9: variable 'a' is already declared in this block
+== /tmp/t5/e5_assign.txt
+compilation error: line 5:5: cannot assign to 'x' of type bool with a value of type i32
+(lcd) ubuntu@lcd-course:~/repo$ echo "== warmup"; python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll && echo ACCEPTED
+== warmup
+Traceback (most recent call last):
+  File "/home/ubuntu/repo/compiler.py", line 793, in <module>
+    main_cli()
+  File "/home/ubuntu/repo/compiler.py", line 784, in main_cli
+    CodeGen(builder).generate(tree)
+  File "/home/ubuntu/repo/compiler.py", line 342, in generate
+    tree.accept(self)
+  File "/home/ubuntu/repo/compiler.py", line 72, in accept
+    return visitor.visit_program(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/repo/compiler.py", line 346, in visit_program
+    stmt.accept(self)
+  File "/home/ubuntu/repo/compiler.py", line 146, in accept
+    return visitor.visit_if(self)
+           ^^^^^^^^^^^^^^^^
+AttributeError: 'CodeGen' object has no attribute 'visit_if'. Did you mean: 'visit_exit'?
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Всі п'ять помилок збігаються з завданням до символу, включно з позиціями `2:1`, `2:8`, `5:6`, `4:9` і `5:5`.
+
+Traceback у warm-up очікуваний, і він якраз доводить, що семантика прийняла програму. Помилки типів і областей не було. Крах стався пізніше, у `CodeGen`, який ще не вміє `if`:
+
+```
+AttributeError: 'CodeGen' object has no attribute 'visit_if'
+```
+
+Це Task 3. Для Task 2 доказ приймання дає режим `--ast`, який не доходить до `CodeGen`:
+
+```bash
+python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll --ast
+```
+
+Дамп має збігатися з тим, що наведено в Task 1 (три `Decl x`: `i32 mut`, `bool mut`, `i64 mut`). Якщо порядок аргументів у тебе інший, використовуй той, яким ти запускала `--ast` раніше. Пришли вивід.
+
+Після цього закриваємо Task 2:
+1. Складемо тести: п'ять `err`-програм у `tests/err/` з `.expected`.
+2. Закомітимо як "Task 2".
+3. Підемо на Task 3, де `CodeGen` отримає `visit_block`, `visit_if` і `visit_not`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/warmup.txt /tmp/x.ll --ast
+usage: compiler.py [--ast | --tokens] input.txt [output.ll]
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Я переплутав порядок аргументів: прапорець іде першим.
+
+```bash
+python3 compiler.py --ast /tmp/t5/warmup.txt
+```
+
+Очікую такий дамп (як у Task 1):
+
+```
+Program
+ Decl x i32 mut
+  Const 10
+ If
+  Bool true
+  Block
+   Decl x bool mut
+    Bool true
+   If
+    Var x
+    Block
+     Decl x i64 mut
+      Const 20
+     Exit
+      Var x
+   Exit
+    Var x
+ Exit
+  Var x
+```
+
+Відступи можуть відрізнятися, це залежить від твого `dump`. Важливі структура і порядок вузлів. Пришли вивід.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+usage: compiler.py [--ast | --tokens] input.txt [output.ll]
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py --ast /tmp/t5/warmup.txt
+Program
+  Decl x i32 mut
+    Const 10
+  If
+    Bool true
+    Block
+      Decl x bool mut
+        Bool true
+      If
+        Var x
+        Block
+          Decl x i64 mut
+            Const 20
+          Exit
+            Var x
+      Exit
+        Var x
+  Exit
+    Var x
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Дамп збігається зі структурою з Task 1: три `Decl x` (`i32 mut`, `bool mut`, `i64 mut`), вкладені `If`/`Block`, два `Exit` у блоках і один в кінці. Відступ у два пробіли для дампа нормальний. Тож warm-up прийнято, а п'ять програм відхилено. Це все, що Task 2 просить показати.
+
+## Крок 2.4: тести і коміт
+
+Спочатку скопіюємо п'ять програм у `tests/err/` з іменами за фічею (так вимагає завдання) і згенеруємо `.expected`:
+
+```bash
+cd ~/repo
+ls tests/err | head -3
+cp /tmp/t5/e1_cond.txt   tests/err/if_cond-not-bool.txt
+cp /tmp/t5/e2_not.txt    tests/err/not_on-integer.txt
+cp /tmp/t5/e3_scope.txt  tests/err/scope_use-after-block.txt
+cp /tmp/t5/e4_redecl.txt tests/err/scope_redeclare-same-block.txt
+cp /tmp/t5/e5_assign.txt tests/err/scope_assign-inner-type.txt
+for f in if_cond-not-bool not_on-integer scope_use-after-block scope_redeclare-same-block scope_assign-inner-type; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+cat tests/err/if_cond-not-bool.expected tests/err/scope_assign-inner-type.expected
+python3 run_tests.py | tail -1
+```
+
+Перший `ls` показує, як названі наявні файли в `tests/err/` (чи там уже є пари `.txt` + `.expected`). Очікую, що `.expected` мають повідомлення зі сторінки вище, а підсумок буде `66 passed, 0 failed` (61 + 5).
+
+Якщо `ls tests/err` порожній або каталогу немає, напиши, і я скажу, куди їх класти.
+
+Коли тести пройдуть, коміт:
+
+```bash
+git add compiler.py tests/
+git commit -m "Task 2: scope stack in the semantic pass, bool checks for if and !"
+git log --oneline | head -3
+```
+
+Warm-up і `.ast`-снапшоти додамо в Task 3, бо `tests/ok` запускають `lli`, а для `if` ще немає кодогенерації.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ ls tests/err | head -3
+bool_arithmetic.expected
+bool_arithmetic.txt
+bool_into_int.expected
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/e1_cond.txt   tests/err/if_cond-not-bool.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/e2_not.txt    tests/err/not_on-integer.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/e3_scope.txt  tests/err/scope_use-after-block.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/e4_redecl.txt tests/err/scope_redeclare-same-block.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/e5_assign.txt tests/err/scope_assign-inner-type.txt
+(lcd) ubuntu@lcd-course:~/repo$ for f in if_cond-not-bool not_on-integer scope_use-after-block scope_redeclare-same-block scope_assign-inner-type; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+(lcd) ubuntu@lcd-course:~/repo$ cat tests/err/if_cond-not-bool.expected tests/err/scope_assign-inner-type.expected
+compilation error: line 2:1: the condition of 'if' must be bool, got i32
+compilation error: line 5:5: cannot assign to 'x' of type bool with a value of type i32
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+66 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+`66 passed, 0 failed`, як і очікувалося: 61 старий тест і 5 нових. Тепер коміт:
+
+```bash
+git add compiler.py tests/
+git commit -m "Task 2: scope stack in the semantic pass, bool checks for if and !"
+git log --oneline | head -3
+```
+
+Пришли вивід `git log`. Там мають бути два верхні коміти: Task 2 і Task 1 (`863fd8e`).
+
+Після цього зробимо `git push`, щоб обидва коміти потрапили в PR. Далі Task 3: `CodeGen` отримає `visit_block`, `visit_if`, `visit_not` і хелпер `new_slot`, який кладе `alloca` у entry-блок. Це найбільший крок практики (1.5 бала), тому розіб'ємо його так само на малі частини.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+[вкладення: attachment.txt] перевір уважно з завданням що ми виконали все по умовам
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Перед відповіддю перевіряю головну вимогу контракту з кодогенерацією: три `x` у warm-up мають вказувати на три різні декларації. Дамп цього не показує.
+
+Task 2 виконано повністю. Перевірив твій актуальний `compiler.py` по кожній вимозі завдання, а не лише по виводу тестів.
+
+| Вимога Task 2 | Статус |
+|---|---|
+| Таблиця символів стає стеком кадрів (`self.scopes = [{}]`) | ✅ |
+| Блок пушить порожній кадр на вході й попає на виході (`visit_block`) | ✅ |
+| Декларація йде у верхній кадр (`scopes[-1]`) | ✅ |
+| Дублікат перевіряється тільки у верхньому кадрі | ✅ |
+| Shadowing з будь-яким типом: між кадрами типи не порівнюються | ✅ |
+| Використання йде зверху вниз і бере перший збіг (`lookup`) | ✅ |
+| Ім'я, якого немає в жодному кадрі (зокрема з уже знятого), дає "used before its declaration" | ✅ |
+| Умова `if` має бути `bool` | ✅ |
+| `!` приймає тільки `bool` і повертає `bool` | ✅ |
+| Усе з Practice 4 лишилося (`check_assignable`, `mut`, константи, розширення) | ✅ |
+| Кожен `Var` і `Assign` отримує `node.decl` | ✅ |
+| Усі п'ять помилок з правильними `line:column` | ✅ (ми їх запускали) |
+| Warm-up прийнято | ✅ (`--ast`) |
+
+Окремо перевірив контракт із кодогенерацією, який у завданні виділено: три `x` у warm-up — це три різні декларації з різними типами. Це я перевіряв кодом. Внутрішній `exit x` вказує на `i64`-декларацію, середній на `bool`, зовнішній на `i32`. Умова `if x` резолвиться в `bool`-`x`. `x := false` у внутрішньому блоці прив'язується до внутрішнього `x`, а не до зовнішнього. CodeGen у Task 3 побачить правильні `node.decl`.
+
+Дрібниці, які не заважають:
+- Рядок 306 має зайвий пробіл у кінці (`self.scopes.pop() `). Це косметика.
+- `ProgramNode` не має власного кадру, він працює у глобальному `scopes[0]`. Для завдання це правильно.
+
+Що ще лишилося не по коду, а по вимогах практики загалом:
+- Warm-up на папері (три відповіді й два підрахунки кадрів/блоків) робиш сама. Можу перевірити, коли напишеш.
+- `git push` двох комітів (Task 1 і Task 2).
+- Питання до викладача про `src/compiler.py` та `check.py`: завдання вимагає саме такі шляхи, а в тебе `compiler.py` у корені.
+- `ai_usage.txt` оновлюється наприкінці практики.
+- `.ast`-снапшоти для нових програм додамо разом із Task 3.
+
+Якщо коміт Task 2 ще не зроблено, виконай `git commit` з попереднього повідомлення, потім `git push`, і переходимо до Task 3.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ git status
+On branch practice-5
+Your branch is ahead of 'origin/practice-5' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        modified:   compiler.py
+        modified:   tests/test_redeclaration.expected
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        tests/err/if_cond-not-bool.expected
+        tests/err/if_cond-not-bool.txt
+        tests/err/not_on-integer.expected
+        tests/err/not_on-integer.txt
+        tests/err/scope_assign-inner-type.expected
+        tests/err/scope_assign-inner-type.txt
+        tests/err/scope_redeclare-same-block.expected
+        tests/err/scope_redeclare-same-block.txt
+        tests/err/scope_use-after-block.expected
+        tests/err/scope_use-after-block.txt
+
+no changes added to commit (use "git add" and/or "git commit -a")
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Коміт Task 2 ще не зроблено: файли змінені, але не додані. Зроби це зараз, двома окремими блоками, щоб вставка не злилася:
+
+```bash
+git add compiler.py tests/
+git commit -m "Task 2: scope stack in the semantic pass, bool checks for if and !"
+```
+
+Потім:
+
+```bash
+git status --short | head
+git log --oneline | head -3
+```
+
+`git status --short` має бути порожнім. У `git log` мають бути зверху коміт Task 2, під ним Task 1 (`863fd8e`).
+
+Далі пуш:
+
+```bash
+git push
+```
+
+Гілка `practice-5` уже існує на origin, тому додатковий `-u` не потрібен. Пришли вивід `git log` і `git push`, і переходимо до Task 3.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+TASK 3 — A BLOCK IS A BUILDER POSITION (1.5 POINTS)
+Branches
+An if becomes three basic blocks appended to the function — then, else (when there is one) and merge — and
+one conditional branch on the i1 the condition produced. The builder is positioned at a block; every instruction
+goes to the block it is positioned at; a block must end with exactly one terminator (br, ret), and nothing may
+follow it.
+then_bb = self.function.append_basic_block("then")
+else_bb = self.function.append_basic_block("else") if node.else_block else None
+merge_bb = self.function.append_basic_block("merge")
+self.builder.cbranch(cond, then_bb, else_bb or merge_bb) # ends the current block
+self.builder.position_at_end(then_bb)
+node.then_block.accept(self)
+if not self.builder.block.is_terminated: self.builder.branch(merge_bb)
+# an arm that exited has its ret
+... self.builder.position_at_end(merge_bb) # the else arm the same way
+# what follows the if goes here
+Two things to notice while writing it. cbranch takes two block objects: a branch to a block that does not exist
+cannot be written. And the terminator check reads the current block, not then_bb — a nested if moved the
+builder to its own merge.
+Slots
+Every alloca goes to the entry block, whatever block the builder is in when the declaration is met. Write one
+helper — position the builder at the start of the entry block, allocate, come back — and call it from visit_decl.
+Two reasons: a slot created inside then does not exist on the else path, and LLVM only promotes entry-block
+allocas to registers. Shadowing costs nothing here: two declarations, two slots.
+exit inside an arm
+exit emits printf and ret wherever it stands, and leaves the block terminated; the if code above then adds no
+br. When both arms exit, the merge block has no predecessor — it still gets the program’s last exit and stays valid.
+Read your output.ll for the nested program: four blocks, each ending once.
+The phi you did not write
+Compile this and run opt -passes=mem2reg -S output.ll:
+i32 mut r{0}
+i64 n{3}
+if n == 3
+{
+r := 1
+}
+else
+{
+r := 2
+}
+exit r
+In the promoted IR the two stores are gone and merge starts with %r.0 = phi i32 [ 1, %then ], [ 2,
+%else ] — a value that depends on which block you came from. That is SSA; your allocas let LLVM do it for you.
+Tests
+tests/ok and tests/err with at least 6 programs each, named after the feature (if-else_nested.txt,
+scope_shadow-type.txt). Cover: if without else, nested if, shadowing with a different type, exit inside an
+arm, ! in a condition, a variable assigned in both arms and read after; a non-bool condition, ! on an integer, a block
+variable used after its block, a redeclaration in the same block, { on the if line, an empty block. Practice 3 and 4
+programs still print what they printed; python3 check.py is green.
+Show: 15 and the warm-up program’s 20 through lli; the phi line from opt; output.ll of the nested program
+with its blocks; the check.py table.
+
+тепер давай розбирати третє завдання
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Спочатку прототипую Task 3 на твоєму актуальному коді в пісочниці. Так я дам тобі вже перевірені правки, а не здогадки.
+
+Прототип пройшов на твоєму актуальному коді: `15`, warm-up `20`, `!`-програма `true`, а `opt` показує `%r.0 = phi i32 [ 1, %then ], [ 2, %else ]`. Верифікатор LLVM приймає весь IR. Тепер ідемо покроково, як і в Task 2.
+
+## Ідея Task 3
+
+Task 2 відповідав на питання "яка змінна це?", а Task 3 відповідає на "в який блок писати інструкцію?". У `CodeGen` вже є `self.builder`, і він завжди стоїть у якомусь basic block. `if` просто **переставляє білдер** між блоками `then`, `else` і `merge`. Правил два:
+1. Кожен блок закінчується рівно одним термінатором (`br`/`cbranch`/`ret`), і після нього нічого немає.
+2. Усі `alloca` лежать у `entry`, незалежно від того, де зустрілась декларація.
+
+Для цього треба зробити три речі: хелпер для слотів, `visit_not` і пару `visit_block`/`visit_if`.
+
+## Крок 3.1: хелпер `new_slot`
+
+У класі `CodeGen` заміни `__init__` і додай метод одразу після нього:
+
+```python
+class CodeGen:
+    def __init__(self, builder):
+        self.builder = builder
+        self.module = builder.module
+        self.function = builder.function
+        self.n_slots = 0
+
+    def new_slot(self, llvm_ty, name):
+        entry = self.function.entry_basic_block
+        saved = self.builder.block
+        if self.n_slots < len(entry.instructions):
+            self.builder.position_before(entry.instructions[self.n_slots])
+        else:
+            self.builder.position_at_end(entry)
+        ptr = self.builder.alloca(llvm_ty, name=name)
+        self.n_slots += 1
+        self.builder.position_at_end(saved)
+        return ptr
+```
+
+Як це працює: `n_slots` рахує вже створені `alloca`. Вони лежать на початку `entry`, тому новий слот вставляється перед першою не-`alloca` інструкцією, або в кінець `entry`, якщо інших інструкцій ще немає. Потім білдер повертається в той блок, де був (`saved`). Завдяки цьому порядок слотів відповідає порядку оголошень.
+
+У `visit_decl` заміни один рядок:
+
+```python
+        node.ptr = self.new_slot(llvm_ty, node.name)
+```
+
+(було `self.builder.alloca(llvm_ty, name=node.name)`).
+
+Перевірка:
+
+```bash
+python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+```
+
+Очікую `66 passed`. Старі програми ще не мають `if`, тому поведінка не змінюється, лише `alloca` тепер зібрані зверху `entry`.
+
+## Крок 3.2: `visit_not`, `visit_block`, `visit_if`
+
+У `CodeGen` після `visit_bool` додай:
+
+```python
+    def visit_not(self, node):
+        return self.builder.not_(node.operand.accept(self))
+
+    def visit_block(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit_node is not None:
+            node.exit_node.accept(self)
+
+    def visit_if(self, node):
+        cond = node.condition.accept(self)
+        then_bb = self.function.append_basic_block("then")
+        else_bb = self.function.append_basic_block("else") if node.else_block else None
+        merge_bb = self.function.append_basic_block("merge")
+        self.builder.cbranch(cond, then_bb, else_bb or merge_bb)
+
+        self.builder.position_at_end(then_bb)
+        node.then_block.accept(self)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(merge_bb)
+
+        if else_bb is not None:
+            self.builder.position_at_end(else_bb)
+            node.else_block.accept(self)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+```
+
+Що тут важливо:
+- Перевірка `is_terminated` читає **поточний** блок (`self.builder.block`), а не `then_bb`. Вкладений `if` пересунув білдер у свій `merge`, і `br` треба дописати саме туди.
+- Якщо арка виконала `exit`, у ній уже є `ret`, і `br` не додається. Інакше було б два термінатори.
+- Без `else` `cbranch` веде у `merge`: умова хибна, і `then` пропускається.
+- `not_` для `i1` це `xor` з `true`.
+
+Перевірка (файли з минулого кроку лежать у `/tmp/t5`):
+
+```bash
+python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+cd /tmp/t5
+printf 'i32 mut a{10}\nbool b{true}\nif b\n{\n    a := a + 5\n}\nelse\n{\n    a := a - 5\n}\nexit a\n' > p15.txt
+cd ~/repo
+python3 compiler.py /tmp/t5/p15.txt /tmp/p15.ll && lli /tmp/p15.ll
+python3 compiler.py /tmp/t5/warmup.txt /tmp/w.ll && lli /tmp/w.ll
+```
+
+Очікую `66 passed`, потім `Program exit with result 15` і `Program exit with result 20`.
+
+Пиши, що вийшло. Далі: phi через `opt`, блоки в `output.ll`, тести в `tests/ok`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+поясни цей крок
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+## Спершу: що таке basic block і builder
+
+Функція `main` в IR це не один рядок інструкцій, а **набір basic block'ів**. Кожен блок має мітку, список інструкцій і закінчується одним термінатором: `br` (перехід), `cbranch` (умовний перехід) або `ret`. Всередині блоку немає переходів, тому він завжди виконується від початку до кінця.
+
+`self.builder` — це "курсор": куди він зараз поставлений, туди й потрапляє наступна інструкція. До цього практика мала один блок `entry`, і курсор ніколи не рухався. `if` вперше змушує його рухатись.
+
+## Крок 3.1: чому `new_slot`
+
+`alloca` резервує пам'ять під змінну. Нам потрібно, щоб усі `alloca` лежали в `entry`, з двох причин, які названо в завданні:
+
+1. **Шляхи виконання.** Якщо `alloca` лежить усередині `then`, то коли виконується `else`, цього слота не існує. А `exit x` після `if` читав би неіснуючу пам'ять.
+2. **`mem2reg`.** LLVM перетворює змінні на регістри (і будує `phi`) тільки для `alloca` в `entry`.
+
+Але `visit_decl` викликається тоді, коли білдер стоїть десь у `then`, `else` чи `merge`. Тому `new_slot` робить три дії:
+
+```
+запам'ятати, де стоїть білдер   (saved)
+перейти в entry і створити alloca
+повернутись у saved
+```
+
+Деталь із `n_slots`: вставка в кінець `entry` не працює. Туди вже може бути дописаний `cbranch`, а нова інструкція після термінатора недопустима. Тому ми вставляємо **перед** першою не-`alloca` інструкцією (`position_before(...)`). `n_slots` рахує, скільки `alloca` вже стоїть зверху, щоб знати, де закінчується їхня ділянка.
+
+Тому в тесті на кроці 3.1 нічого не змінилось: у старих програмах немає `if`, і єдина різниця в тому, що всі `alloca` стоять зверху `entry`.
+
+## Крок 3.2: що робить `visit_if`
+
+Приклад із прототипу, warm-up (скорочено):
+
+```
+entry:   alloca x, x.1, x.2 · store 10 · br i1 true → then / merge
+then:    store true → x.1 · load · br i1 %cond → then.1 / merge.1
+merge:   load x · printf · ret            ← останній exit програми
+then.1:  store 20 → x.2 · printf · ret    ← exit усередині блоку
+merge.1: load x.1 · printf · ret          ← exit після внутрішнього if
+```
+
+Кроки `visit_if`:
+
+1. **Обчислити умову** в поточному блоці. Це `i1`.
+2. **Створити блоки** `then`, `else` (якщо є), `merge`. Вони поки порожні і просто додані у функцію.
+3. **`cbranch(cond, then_bb, else_bb or merge_bb)`**. Він закриває поточний блок: далі писати в нього не можна. Без `else` умова хибна → одразу `merge`. Зверни увагу: `cbranch` приймає **об'єкти блоків**, а не текстові мітки (за текстові мітки завдання ставить 0).
+4. **Пересунути білдер у `then`** (`position_at_end`) і згенерувати тіло блоку.
+5. **Закрити `then`.** Якщо блок ще не завершений, дописати `br merge`. Якщо всередині був `exit`, там уже є `ret`, і другого термінатора додавати не можна.
+6. **Те саме для `else`.**
+7. **Поставити білдер у `merge`.** Усе, що йде після `if`, потрапляє туди.
+
+## Чому перевіряємо `self.builder.block`, а не `then_bb`
+
+Припустимо, у `then` є вкладений `if`. Після нього білдер стоїть **не в `then`, а в `merge.1`** (merge внутрішнього `if`). Якщо перевіряти `then_bb.is_terminated`, ми побачили б там `cbranch` і не дописали б `br` у `merge.1`. Блок лишився б без термінатора, а це невалідний IR. `self.builder.block` завжди вказує на те місце, де білдер зараз.
+
+## Чому `merge` залишається валідним, коли обидві гілки роблять `exit`
+
+Тоді в `merge` ніхто не входить, але він усе одно отримує останній `exit` програми з `ret`. Блок без передників у LLVM допустимий, і верифікатор його приймає. Так у warm-up `merge` стоїть у списку, хоч до нього й не доходить.
+
+## Чому `visit_not` це одна рядок
+
+`not_` на `i1` генерує `xor i1 %v, true`. Операнд уже обчислений через `accept`, і в нього тип `i1`.
+
+Якщо щось із цього лишається неясним, скажи, що саме (`new_slot`, порядок блоків чи термінатори). Або вставляй код і запускай перевірку з попереднього кроку.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+66 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+cd /tmp/t5
+66 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ cd /tmp/t5
+(lcd) ubuntu@lcd-course:/tmp/t5$ printf 'i32 mut a{10}\nbool b{true}\nif b\n{\n    a := a + 5\n}\nelse\n{\n    a := a - 5\n}\nexit a\n' > p15.txt
+(lcd) ubuntu@lcd-course:/tmp/t5$ cd ~/repo
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/p15.txt /tmp/p15.ll && lli /tmp/p15.ll
+Program exit with result 15
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/warmup.txt /tmp/w.ll && lli /tmp/w.ll
+Program exit with result 20
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+`15` і `20` працюють, тести зелені (`66 passed`). Тепер три речі, які практика просить показати: `phi`, блоки в `output.ll` і програма з `!`.
+
+## Крок 3.3: phi, блоки і `!`
+
+```bash
+cd ~/repo
+printf 'i32 mut r{0}\ni64 n{3}\nif n == 3\n{\n    r := 1\n}\nelse\n{\n    r := 2\n}\nexit r\n' > /tmp/t5/phi.txt
+printf 'bool a{true}\nbool b{false}\nbool c{!a}\nbool mut d{! b}\nd := !c\nif !c\n{\n    exit d\n}\nexit 0\n' > /tmp/t5/not.txt
+python3 compiler.py /tmp/t5/phi.txt /tmp/phi.ll && lli /tmp/phi.ll
+opt -passes=mem2reg -S /tmp/phi.ll | grep -n "phi\|store\|alloca"
+python3 compiler.py /tmp/t5/not.txt /tmp/not.ll && lli /tmp/not.ll
+```
+
+Очікую:
+- `Program exit with result 1`;
+- у виводі `opt` рядок `%r.0 = phi i32 [ 1, %then ], [ 2, %else ]`, а `store` і `alloca` для `r` зникли;
+- `Program exit with result true` для програми з `!`.
+
+Рядок `phi` потрібно показати викладачеві. Він працює, бо `new_slot` кладе `alloca` в `entry`.
+
+Тепер блоки warm-up і перевірка валідності IR:
+
+```bash
+sed -n '/define/,/^}/p' /tmp/w.ll
+for f in p15 w phi not; do opt -passes=verify -disable-output /tmp/$f.ll && echo "valid $f"; done
+```
+
+Очікую чотири рядки `valid ...`. Блоки мають бути такі: `entry`, `then`, `merge`, `then.1`, `merge.1`, і кожен закінчується рівно один раз (`br`/`ret`).
+
+Тут є розбіжність із завданням. Воно каже "four blocks, each ending once", а в warm-up їх п'ять разом з `entry`. Імовірно, завдання не рахує `entry`, бо чотири це `then`, `merge`, `then.1`, `merge.1`. Для warm-up на папері це теж питання про кількість блоків, тому рахуй і запиши `entry` явно (п'ять), а питання про формулювання можна задати викладачу.
+
+Пришли вивід, і перейдемо до тестів `tests/ok`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ printf 'bool a{true}\nbool b{false}\nbool c{!a}\nbool mut d{! b}\nd := !c\nif !c\n{\n    exit d\n}\nexit 0\n' > /tmp/t5/not.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/phi.txt /tmp/phi.ll && lli /tmp/phi.ll
+Program exit with result 1
+(lcd) ubuntu@lcd-course:~/repo$ opt -passes=mem2reg -S /tmp/phi.ll | grep -n "phi\|store\|alloca"
+1:; ModuleID = '/tmp/phi.ll'
+2:source_filename = "/tmp/phi.ll"
+25:  %r.0 = phi i32 [ 1, %then ], [ 2, %else ]
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/not.txt /tmp/not.ll && lli /tmp/not.ll
+Program exit with result true
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+`phi` вийшов правильний, а програма з `!` дала `true`. Пропущена лише друга половина кроку 3.3, тобто вивід блоків і перевірка валідності. Запустиш її разом із тестами нижче.
+
+Спершу перевіряю тестові програми в пісочниці, щоб `.expected` точно збіглися.
+
+Усе очікуване отримав: помилки парсера (`2:6` і `2:1`) збігаються зі списком у завданні.
+
+## Крок 3.3 (друга половина): блоки і валідність
+
+```bash
+sed -n '/define/,/^}/p' /tmp/w.ll
+for f in p15 w phi not; do opt -passes=verify -disable-output /tmp/$f.ll && echo "valid $f"; done
+```
+
+Очікую блоки `entry`, `then`, `merge`, `then.1`, `merge.1` і чотири рядки `valid ...`.
+
+## Крок 3.4: тести
+
+Практика вимагає щонайменше 6 програм у `tests/ok` і 6 у `tests/err`. У `err` уже є п'ять з Task 2. Додамо дві з парсера, у `ok` сім. Створюємо програми:
+
+```bash
+cd ~/repo
+printf 'i32 mut a{10}\nbool b{true}\nif b\n{\n    a := a + 5\n}\nelse\n{\n    a := a - 5\n}\nexit a\n' > tests/ok/if-else_basic.txt
+printf 'i32 mut s{1}\nif s == 1\n{\n    s := 7\n}\nexit s\n' > tests/ok/if_no-else.txt
+printf 'i32 mut a{1}\nif a == 1\n{\n    if a != 2\n    {\n        a := 10\n    }\n    else\n    {\n        a := 20\n    }\n}\nelse\n{\n    a := 30\n}\nexit a\n' > tests/ok/if-else_nested.txt
+cp /tmp/t5/warmup.txt tests/ok/scope_shadow-type.txt
+printf 'i32 x{4}\nif x == 4\n{\n    exit 100\n}\nexit 0\n' > tests/ok/exit_in-arm.txt
+cp /tmp/t5/not.txt tests/ok/not_in-condition.txt
+cp /tmp/t5/phi.txt tests/ok/assign_both-arms.txt
+printf 'i32 mut x{1}\nif true\n{\n    i32 x{5}\n}\nexit x\n' > tests/ok/scope_shadow-restores.txt
+printf 'bool b{true}\nif b {\n    exit 1\n}\nexit 0\n' > tests/err/if_brace-on-line.txt
+printf 'if true\n{\n}\nexit 0\n' > tests/err/if_empty-block.txt
+ls tests/ok | head -4
+```
+
+Перший `ls` показує, як названі файли в `tests/ok/` (я очікую пари `.txt` і `.expected`). Далі генеруємо очікуваний вивід, у `ok` це вивід `lli`, а в `err` повідомлення компілятора:
+
+```bash
+for f in if-else_basic if_no-else if-else_nested scope_shadow-type exit_in-arm not_in-condition assign_both-arms scope_shadow-restores; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_brace-on-line if_empty-block; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+head -n 20 tests/ok/*.expected tests/err/if_brace-on-line.expected tests/err/if_empty-block.expected | grep -v "^$"
+python3 run_tests.py | tail -1
+```
+
+Очікую у `.expected`:
+- `15`, `7`, `10`, `20`, `100`, `true`, `1`, `1` (у порядку створення);
+- `line 2:6: unexpected '{' after the statement` і `line 2:1: empty block`.
+
+Підсумок має бути `66 + 8 + 2 + 8 = 84` або близько до цього (залежить від того, як `run_tests.py` рахує `.ast`-снапшоти). Головне — `0 failed`. Якщо формат `tests/ok/` відрізняється від мого припущення (наприклад, `.expected` лежить деінде), напиши, що показав перший `ls`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/not.txt /tmp/not.ll && lli /tmp/not.ll
+Program exit with result true
+(lcd) ubuntu@lcd-course:~/repo$ sed -n '/define/,/^}/p' /tmp/w.ll
+define i32 @"main"()
+{
+entry:
+  %"x" = alloca i32
+  %"x.1" = alloca i1
+  %"x.2" = alloca i64
+  store i32 10, i32* %"x"
+  br i1 1, label %"then", label %"merge"
+then:
+  store i1 1, i1* %"x.1"
+  %".5" = load i1, i1* %"x.1"
+  br i1 %".5", label %"then.1", label %"merge.1"
+merge:
+  %".19" = load i32, i32* %"x"
+  %"wide.1" = sext i32 %".19" to i64
+  %".20" = bitcast [31 x i8]* @"fmt" to i8*
+  %".21" = call i32 (i8*, ...) @"printf"(i8* %".20", i64 %"wide.1")
+  ret i32 0
+then.1:
+  %"wide" = sext i32 20 to i64
+  store i64 %"wide", i64* %"x.2"
+  %".8" = load i64, i64* %"x.2"
+  %".9" = bitcast [31 x i8]* @"fmt" to i8*
+  %".10" = call i32 (i8*, ...) @"printf"(i8* %".9", i64 %".8")
+  ret i32 0
+merge.1:
+  %".12" = load i1, i1* %"x.1"
+  %".13" = bitcast [5 x i8]* @"true_str" to i8*
+  %".14" = bitcast [6 x i8]* @"false_str" to i8*
+  %".15" = select  i1 %".12", i8* %".13", i8* %".14"
+  %".16" = bitcast [29 x i8]* @"fmt_bool" to i8*
+  %".17" = call i32 (i8*, ...) @"printf"(i8* %".16", i8* %".15")
+  ret i32 0
+}
+(lcd) ubuntu@lcd-course:~/repo$ for f in p15 w phi not; do opt -passes=verify -disable-output /tmp/$f.ll && echo "valid $f"; done
+valid p15
+valid w
+valid phi
+valid not
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Блоки правильні. Усі п'ять завершені рівно одним термінатором: `entry` закінчується `br`, інші чотири закінчуються `ret`. Усі чотири IR пройшли верифікатор LLVM.
+
+У `entry` стоять три `alloca` для трьох `x`: `i32`, `i1` і `i64`, тобто три слоти для трьох декларацій. Усі вони лежать у `entry`, хоча дві з них оголошені всередині `then` і `then.1`. Це якраз та вимога про слоти, яку перевіряє завдання.
+
+Блок `merge` стоїть у функції другим, хоч до нього й не доходить жодна гілка. Він уже отримав останній `exit` програми з `ret`, і LLVM його приймає. Блок `then.1` закінчується `ret` від внутрішнього `exit x`, тому `br` туди не дописано.
+
+Лишилося виконати крок 3.4 з мого попереднього повідомлення: створення тестів у `tests/ok`, `tests/err` і генерація `.expected`/`.ast`. Почни з першого `ls tests/ok | head -4`, бо він показує, як названі наявні файли в цій папці. Пришли вивід `ls`, а потім підсумок `python3 run_tests.py | tail -1`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ cd ~/repo
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 mut a{10}\nbool b{true}\nif b\n{\n    a := a + 5\n}\nelse\n{\n    a := a - 5\n}\nexit a\n' > tests/ok/if-else_basic.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 mut s{1}\nif s == 1\n{\n    s := 7\n}\nexit s\n' > tests/ok/if_no-else.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 mut a{1}\nif a == 1\n{\n    if a != 2\n    {\n        a := 10\n    }\n    else\n    {\n        a := 20\n  }\n}\nelse\n{\n    a := 30\n}\nexit a\n' > tests/ok/if-else_nested.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/warmup.txt tests/ok/scope_shadow-type.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 x{4}\nif x == 4\n{\n    exit 100\n}\nexit 0\n' > tests/ok/exit_in-arm.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/not.txt tests/ok/not_in-condition.txt
+(lcd) ubuntu@lcd-course:~/repo$ cp /tmp/t5/phi.txt tests/ok/assign_both-arms.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 mut x{1}\nif true\n{\n    i32 x{5}\n}\nexit x\n' > tests/ok/scope_shadow-restores.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'bool b{true}\nif b {\n    exit 1\n}\nexit 0\n' > tests/err/if_brace-on-line.txt
+(lcd) ubuntu@lcd-course:~/repo$ printf 'if true\n{\n}\nexit 0\n' > tests/err/if_empty-block.txt
+(lcd) ubuntu@lcd-course:~/repo$ ls tests/ok | head -4
+above_two_billion.expected
+above_two_billion.txt
+assign_both-arms.txt
+bool_assign.expected
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Формат підтверджено: у `tests/ok/` лежать пари `.txt` і `.expected`, як я й припускав. Усі 11 файлів створені. У `if-else_nested.txt` у тебе закриваюча дужка внутрішнього `else` з двома пробілами замість чотирьох. Це не впливає, бо лексер пропускає пробіли, але можна вирівняти:
+
+```bash
+sed -i 's/^  }$/        }/' tests/ok/if-else_nested.txt
+cat tests/ok/if-else_nested.txt
+```
+
+Усі дужки блоків мають стояти під відповідним `{`. Далі генеруємо очікуваний вивід і `.ast`:
+
+```bash
+for f in if-else_basic if_no-else if-else_nested scope_shadow-type exit_in-arm not_in-condition assign_both-arms scope_shadow-restores; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_brace-on-line if_empty-block; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+```
+
+Потім подивись на очікуваний вивід і запусти тести:
+
+```bash
+for f in tests/ok/if-else_basic tests/ok/if_no-else tests/ok/if-else_nested tests/ok/scope_shadow-type tests/ok/exit_in-arm tests/ok/not_in-condition tests/ok/assign_both-arms tests/ok/scope_shadow-restores tests/err/if_brace-on-line tests/err/if_empty-block; do echo "$f: $(cat $f.expected)"; done
+python3 run_tests.py | tail -1
+```
+
+Очікую в `.expected` `15`, `7`, `10`, `20`, `100`, `true`, `1`, `1` (у вигляді `Program exit with result ...`) та дві помилки: `line 2:6: unexpected '{' after the statement` і `line 2:1: empty block`. Підсумок тестів має бути `0 failed`.
+
+Пришли вивід.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ sed -i 's/^  }$/        }/' tests/ok/if-else_nested.txt
+(lcd) ubuntu@lcd-course:~/repo$ cat tests/ok/if-else_nested.txt
+i32 mut a{1}
+if a == 1
+{
+    if a != 2
+    {
+        a := 10
+    }
+    else
+    {
+        a := 20
+    }
+}
+else
+{
+    a := 30
+}
+exit a
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Файл виправлено, структура вкладених блоків коректна. Тепер запусти генерацію очікуваного виводу і `.ast`:
+
+```bash
+for f in if-else_basic if_no-else if-else_nested scope_shadow-type exit_in-arm not_in-condition assign_both-arms scope_shadow-restores; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_brace-on-line if_empty-block; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+```
+
+Потім перевір результат:
+
+```bash
+for f in tests/ok/if-else_basic tests/ok/if_no-else tests/ok/if-else_nested tests/ok/scope_shadow-type tests/ok/exit_in-arm tests/ok/not_in-condition tests/ok/assign_both-arms tests/ok/scope_shadow-restores tests/err/if_brace-on-line tests/err/if_empty-block; do echo "$f: $(cat $f.expected)"; done
+python3 run_tests.py | tail -1
+```
+
+Очікую `15`, `7`, `10`, `20`, `100`, `true`, `1`, `1` у рядках `Program exit with result ...`, два повідомлення парсера (`2:6` і `2:1`) та `0 failed` у підсумку. Пришли вивід.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+lcd) ubuntu@lcd-course:~/repo$ for f in tests/ok/if-else_basic tests/ok/if_no-else tests/ok/if-else_nested tests/ok/scope_shadow-type tests/ok/exit_in-arm tests/ok/not_in-condition tests/ok/assign_both-arms tests/ok/scope_shadow-restores tests/err/if_brace-on-line tests/err/if_empty-block; do echo"$f: $(cat $f.expected)"; done
+tests/ok/if-else_basic: Program exit with result 15
+tests/ok/if_no-else: Program exit with result 7
+tests/ok/if-else_nested: Program exit with result 10
+tests/ok/scope_shadow-type: Program exit with result 20
+tests/ok/exit_in-arm: Program exit with result 100
+tests/ok/not_in-condition: Program exit with result true
+tests/ok/assign_both-arms: Program exit with result 1
+tests/ok/scope_shadow-restores: Program exit with result 1
+tests/err/if_brace-on-line: compilation error: line 2:6: unexpected '{' after the statement
+tests/err/if_empty-block: compilation error: line 2:1: empty block
+(lcd) ubuntu@lcd-course:~/repo$ python3 run_tests.py | tail -1
+84 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Усі вісім очікуваних виводів збігаються, а підсумок `84 passed, 0 failed` дорівнює 66 + 8 `ok` + 2 `err` + 8 `.ast`. Ця кількість збіглася з моїм прогнозом.
+
+Покриття тестів із вимоги завдання:
+
+| Що треба покрити | Тест |
+|---|---|
+| if без else | `if_no-else` |
+| вкладений if | `if-else_nested` |
+| shadowing з іншим типом | `scope_shadow-type` |
+| exit усередині гілки | `exit_in-arm` |
+| `!` в умові | `not_in-condition` |
+| змінна, присвоєна в обох гілках і прочитана після | `assign_both-arms` |
+| не-bool умова | `if_cond-not-bool` |
+| `!` на цілому | `not_on-integer` |
+| змінна блоку після блоку | `scope_use-after-block` |
+| redeclaration у тому ж блоці | `scope_redeclare-same-block` |
+| `{` на рядку `if` | `if_brace-on-line` |
+| порожній блок | `if_empty-block` |
+
+Отже, `ok` 8 (потрібно ≥6), `err` 7 (≥6), і всі дванадцять пунктів покриті.
+
+Коміт Task 3 і пуш. Роби окремими блоками:
+
+```bash
+git add compiler.py tests/
+git commit -m "Task 3: basic blocks in codegen, entry-block slots, if/else and ! tests"
+```
+
+```bash
+git status --short | head
+git log --oneline | head -4
+git push
+```
+
+У `git log` мають бути зверху Task 3, потім Task 2 і Task 1. Якщо `git push` раніше не проходив, зараз піде все разом.
+
+## Що лишилося до здачі
+
+1. **`python3 check.py`**: завдання вимагає, щоб він був зеленим, і просить показати його таблицю. Перевір, чи він є в репозиторії: `ls ~/repo`. Якщо немає, це те саме відкрите питання до викладача про `src/compiler.py` і `check.py`.
+2. **`ai_usage.txt`**: без нього 0 за практику. Оновимо його наприкінці. Напиши, коли буде готова.
+3. **Warm-up на папері**: три відповіді (до якої декларації належить кожен `x`, що друкується, чи доходить програма до останнього рядка) і два підрахунки (скільки кадрів пушиться/попається і скільки блоків). Можу перевірити твої відповіді.
+4. **Необов'язково `while` (+0.5)**: на базі `visit_if` це невелика добавка (умовний блок, тіло, кінець, зворотний `br`), але потрібні парсер, чекер і кодоген.
+
+З чого починаємо: `check.py`, `ai_usage.txt` чи `while`?
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+[вкладення: attachment.txt] перевір спочатку уважно чи все ми виконали по цьому завданню
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Перед відповіддю проганяю крайні випадки Task 3 на твоєму актуальному коді: обидві гілки з `exit`, `exit` лише в `else`, декларації в `else`, вкладення в `else`, `mem2reg` на всьому наборі.
+
+Прибираю з команди зайве видалення: воно не потрібне, бо тека нова.
+
+Task 3 виконано повністю по коду і тестах. Відкриті лише пункти, що не стосуються самого компілятора.
+
+## Перевірка по вимогах
+
+| Вимога | Статус |
+|---|---|
+| `if` це блоки `then`, `else` (якщо є) і `merge`, створені через `append_basic_block` | ✅ |
+| Один `cbranch` на `i1`, блоки передаються як об'єкти, не тексти | ✅ |
+| Без `else` умова хибна → `merge` | ✅ |
+| Кожен блок закінчується рівно одним термінатором (перевірка `self.builder.block.is_terminated`, а не `then_bb`) | ✅ |
+| Усі `alloca` у `entry` (`new_slot` викликається з `visit_decl`) | ✅ |
+| Shadowing = два декларації, два слоти | ✅ (у warm-up три слоти `x`, `x.1`, `x.2`) |
+| `exit` усередині гілки лишає блок завершеним, `br` не додається | ✅ |
+| Обидві гілки з `exit`: `merge` без передників, але валідний | ✅ |
+| `phi` після `mem2reg` | ✅ `%r.0 = phi i32 [ 1, %then ], [ 2, %else ]` |
+| `!` у виразах і умовах, включно з `!!a` | ✅ |
+| `tests/ok` ≥ 6 і `tests/err` ≥ 6 з іменами за фічею | ✅ (8 і 7) |
+| Усі 12 пунктів покриття з тексту завдання | ✅ |
+| Програми Practice 3 і 4 друкують те саме | ✅ (84 passed) |
+| `.ast` для нових програм | ✅ (8 у `tests/ok`) |
+| Генерація тільки через `llvmlite.ir`, без IR із рядків | ✅ |
+
+Додатково перевірив крайні випадки, яких немає в тестах. Усі пройшли `lli`, верифікатор LLVM і верифікатор після `mem2reg`:
+- обидві гілки з `exit` (друкує `1`), `exit` лише в `else` (друкує `2`);
+- `if` усередині `else`, оголошення змінної в `else` і присвоєння після вкладеного `if` (друкує `8`);
+- `!!a` у вкладеній умові (друкує `2`).
+
+Одна моя тестова програма видала помилку `cannot assign to 'big': it is not mut`. Це не баг, а правильна відповідь чекера на мою помилку в програмі (`big` не оголошена як `mut`).
+
+## Що показати викладачу
+
+Завдання вимагає показати: `15` і `20` через `lli`, рядок `phi` від `opt`, `output.ll` вкладеної програми з блоками і таблицю `check.py`. Перші три пункти ми вже маємо: `15` і `20` у кроці 3.2, `phi` і блоки в кроці 3.3. Дрібне уточнення про блоки: у warm-up їх п'ять разом з `entry` (`entry`, `then`, `merge`, `then.1`, `merge.1`), а завдання каже "four blocks". Імовірно, воно не рахує `entry`. Для паперового warm-up краще писати 5 і пояснити це.
+
+## Що лишається відкритим
+
+1. **`check.py`**: у завданні "python3 check.py is green" і "the check.py table". У твоїх матеріалах я бачив лише `run_tests.py`. Перевір `ls ~/repo`. Якщо `check.py` там немає, питання до викладача разом із розташуванням `src/compiler.py` (у тебе `compiler.py` у корені).
+2. **`ai_usage.txt`**: без нього 0 за всю практику. Треба оновити для review-fixes, Task 1, 2 і 3.
+3. **Коміт і пуш Task 3**: ти ще не показала вивід `git log` і `git push` після останньої команди.
+4. **Warm-up на папері**: твої відповіді мені на перевірку.
+5. **`while` (+0.5)**: необов'язково.
+
+З чого починаємо? Я б радив спочатку закрити 1, 2 і 3, бо без `ai_usage.txt` практика не зараховується.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+можливо потрібно додати ще якісь тести?
+щоб перевірити точно всі кейси і якісь дірки
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Так, дірки є, і їх краще знайти зараз. Спершу проганяю кандидатів на твоєму актуальному коді, щоб дати тобі тільки перевірені тести і побачити, чи нічого не ламається.
+
+Так, варто додати. Поточні 8 `ok` і 7 `err` покривають усе з вимог завдання, але вони не покривають крайні випадки. Я перевірив нові тести на твоєму актуальному коді: усі `ok` дають правильний результат і валідний IR після `mem2reg`, а `err` дають очікувані помилки. Нічого не зламалося, але такі тести зафіксують поведінку, щоб вона не зламалась у Practice 6.
+
+## Що додаємо
+
+**`tests/ok` (+14)** — те, чого ще немає:
+- обидві гілки з `exit` і `exit` лише в `else` (merge без передників);
+- `if false` (пропуск без `else`), послідовні `if` один за одним, глибоке вкладення на три рівні, `if` усередині `else`;
+- `!!a`, `!a == b` (правило "`!` бере наступний фактор");
+- shadowing: ініціалізатор бере зовнішню змінну (`i32 x{x + 1}` у блоці), присвоєння внутрішній `x` не змінює зовнішню, різні типи в обох гілках;
+- розширення `i32 → i64` у гілці, присвоєння зовнішній змінній із вкладеного блоку, `exit` з `bool` усередині гілки.
+
+**`tests/err` (+16)** — дірки в парсері й семантиці:
+- `else` без `if`, незакритий блок і незакритий `else`, стейтмент після `exit` (простий і вкладений);
+- змінна з `then` в `else`, змінна внутрішнього блоку у зовнішньому, самопосилання `i32 x{x}`;
+- присвоєння не-`mut` усередині блоку, `if` без умови і без блоку, зайва `}`, програма без `exit` після `if`;
+- текст на рядку `else`, `!5`, `a == 1` для `bool`, `if n` для `i32`.
+
+Створюємо `ok`. Блок розбитий, щоб вставка не злилася:
+
+```bash
+cd ~/repo/tests/ok
+printf 'bool c{true}\nif c\n{\n    exit 1\n}\nelse\n{\n    exit 2\n}\nexit 3\n' > exit_both-arms.txt
+printf 'bool c{false}\nif c\n{\n    exit 1\n}\nelse\n{\n    exit 2\n}\nexit 3\n' > exit_in-else.txt
+printf 'if false\n{\n    exit 1\n}\nexit 2\n' > if_false-skips.txt
+printf 'i32 mut r{0}\ni32 n{2}\nif n == 1\n{\n    r := 10\n}\nelse\n{\n    if n == 2\n    {\n        r := 20\n    }\n    else\n    {\n        r := 99\n    }\n    r := r + 1\n}\nexit r\n' > if-else_nested-in-else.txt
+printf 'i32 mut a{0}\nif true\n{\n    a := a + 1\n}\nif false\n{\n    a := a + 10\n}\nelse\n{\n    a := a + 100\n}\nif true\n{\n    a := a + 1000\n}\nexit a\n' > if_sequential.txt
+printf 'i32 mut a{0}\nif true\n{\n    if true\n    {\n        if true\n        {\n            a := 7\n        }\n        else\n        {\n            a := 8\n        }\n    }\n}\nexit a\n' > if_deep-nesting.txt
+cd ~/repo
+```
+
+```bash
+cd ~/repo/tests/ok
+printf 'bool a{false}\nif !!a\n{\n    exit 1\n}\nexit 2\n' > not_double.txt
+printf 'bool a{true}\nbool b{false}\nif !a == b\n{\n    exit 1\n}\nexit 2\n' > not_in-expression.txt
+printf 'i32 x{1}\nif true\n{\n    i32 x{x + 1}\n    exit x\n}\nexit x\n' > scope_shadow-init-outer.txt
+printf 'i32 mut x{1}\nif true\n{\n    i32 mut x{5}\n    x := 9\n}\nexit x\n' > scope_shadow-inner-assign.txt
+printf 'i32 mut x{1}\nif x == 1\n{\n    bool x{true}\n    if x\n    {\n        exit 11\n    }\n}\nelse\n{\n    i64 x{22}\n    exit x\n}\nexit x\n' > scope_shadow-both-arms.txt
+printf 'i64 mut w{0}\ni32 n{5}\nif n == 5\n{\n    w := n\n}\nexit w\n' > assign_widen-in-arm.txt
+printf 'i32 mut a{1}\nif true\n{\n    if true\n    {\n        a := a + 41\n    }\n}\nexit a\n' > assign_outer-from-nested.txt
+printf 'bool f{false}\nif !f\n{\n    exit f\n}\nexit true\n' > exit_bool-in-arm.txt
+cd ~/repo
+ls tests/ok/*.txt | wc -l
+```
+
+Створюємо `err`:
+
+```bash
+cd ~/repo/tests/err
+printf 'i32 a{1}\nelse\n{\n    exit 1\n}\nexit 0\n' > else_no-if.txt
+printf 'if true\n{\n    i32 a{1}\n' > block_never-closed.txt
+printf 'bool c{true}\nif c\n{\n    i32 a{1}\n}\nelse\n{\n    i32 b{2}\n' > else_never-closed.txt
+printf 'if true\n{\n    exit 1\n    exit 2\n}\nexit 0\n' > block_stmt-after-exit.txt
+printf 'if true\n{\n    if true\n    {\n        exit 1\n        i32 z{1}\n    }\n}\nexit 0\n' > block_stmt-after-exit-nested.txt
+printf 'bool c{true}\nif c\n{\n    i32 t{1}\n}\nelse\n{\n    exit t\n}\nexit 0\n' > scope_then-var-in-else.txt
+printf 'if true\n{\n    i32 mut a{1}\n    if true\n    {\n        i32 b{2}\n    }\n    a := b\n}\nexit 0\n' > scope_inner-var-in-outer.txt
+printf 'i32 x{x}\nexit 0\n' > scope_self-reference.txt
+cd ~/repo
+```
+
+```bash
+cd ~/repo/tests/err
+printf 'i32 k{1}\nif true\n{\n    k := 2\n}\nexit k\n' > assign_not-mut-in-block.txt
+printf 'if\n{\n    exit 1\n}\nexit 0\n' > if_no-condition.txt
+printf 'if true\n' > if_no-block.txt
+printf 'i32 a{1}\n}\nexit a\n' > program_stray-brace.txt
+printf 'if true\n{\n    exit 1\n}\n' > program_no-exit-after-if.txt
+printf 'if true\n{\n    exit 1\n}\nelse x\n{\n    exit 2\n}\nexit 0\n' > else_text-on-line.txt
+printf 'bool b{!5}\nexit 0\n' > not_on-constant.txt
+printf 'bool a{true}\nif a == 1\n{\n    exit 1\n}\nexit 0\n' > if_cond-bool-compare.txt
+printf 'i32 n{1}\nif n\n{\n    exit 1\n}\nelse\n{\n    exit 2\n}\nexit 0\n' > if_cond-int-with-else.txt
+cd ~/repo
+ls tests/err/*.txt | wc -l
+```
+
+Генеруємо очікуване (ok: вивід `lli` і `.ast`, err: повідомлення):
+
+```bash
+cd ~/repo
+for f in exit_both-arms exit_in-else if_false-skips if-else_nested-in-else if_sequential if_deep-nesting not_double not_in-expression scope_shadow-init-outer scope_shadow-inner-assign scope_shadow-both-arms assign_widen-in-arm assign_outer-from-nested exit_bool-in-arm; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in else_no-if block_never-closed else_never-closed block_stmt-after-exit block_stmt-after-exit-nested scope_then-var-in-else scope_inner-var-in-outer scope_self-reference assign_not-mut-in-block if_no-condition if_no-block program_stray-brace program_no-exit-after-if else_text-on-line not_on-constant if_cond-bool-compare if_cond-int-with-else; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+```
+
+Перегляд і підсумок:
+
+```bash
+for f in exit_both-arms exit_in-else if_false-skips if-else_nested-in-else if_sequential if_deep-nesting not_double not_in-expression scope_shadow-init-outer scope_shadow-inner-assign scope_shadow-both-arms assign_widen-in-arm assign_outer-from-nested exit_bool-in-arm; do echo "$f: $(cat tests/ok/$f.expected | sed 's/Program exit with result //')"; done
+cat tests/err/{else_no-if,block_never-closed,else_never-closed,block_stmt-after-exit,block_stmt-after-exit-nested,scope_then-var-in-else,scope_inner-var-in-outer,scope_self-reference,assign_not-mut-in-block,if_no-condition,if_no-block,program_stray-brace,program_no-exit-after-if,else_text-on-line,not_on-constant,if_cond-bool-compare,if_cond-int-with-else}.expected
+python3 run_tests.py | tail -1
+```
+
+Очікую для `ok` по порядку: `1 2 2 21 1101 7 2 1 2 1 11 5 42 false`. Для `err`:
+`2:1 'else' without an 'if'`, `2:1 '{' is never closed`, `7:1 '{' is never closed`, `4:5 statement after 'exit'...`, `6:9 statement after 'exit'...`, `8:10 variable 't' is used before its declaration`, `8:10 variable 'b' is used before its declaration`, `1:7 variable 'x' is used before its declaration`, `4:5 cannot assign to 'k': it is not mut`, `1:3 expected a constant or a variable, found end of line`, `1:8 expected '{' on its own line after 'if', found end of file`, `2:1 cannot start a statement with '}'`, `4:1 missing 'exit' statement`, `5:6 unexpected 'x' after the statement`, `1:8 cannot apply '!' to i32`, `2:6 cannot compare bool with i32`, `2:1 the condition of 'if' must be bool, got i32`. Підсумок має бути `0 failed`, а `.ast`-снапшоти з'являться в `tests/ok` для нових програм.
+
+Пришли вивід. Особливо дивись, щоб кожен `.expected` збігався з моїм списком: якщо хоч одна позиція інша, це може бути знахідка.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ for f in exit_both-arms exit_in-else if_false-skips if-else_nested-in-else if_sequential if_deep-nesting not_double not_in-expression scope_shadow-init-outer scope_shadow-inner-assign scope_shadow-both-arms assign_widen-in-arm assign_outer-from-nested exit_bool-in-arm; do echo "$f: $(cat tests/ok/$f.expected | sed 's/Program exit with result //')"; done
+cat tests/err/{else_no-if,block_never-closed,else_never-closed,block_stmt-after-exit,block_stmt-after-exit-nested,scope_then-var-in-else,scope_inner-var-in-outer,scope_self-reference,assign_not-mut-in-block,if_no-condition,if_no-block,program_stray-brace,program_no-exit-after-if,else_text-on-line,not_on-constant,if_cond-bool-compare,if_cond-int-with-else}.expected
+python3 run_tests.py | tail -1
+exit_both-arms: 1
+exit_in-else: 2
+if_false-skips: 2
+if-else_nested-in-else: 21
+if_sequential: 1101
+if_deep-nesting: 7
+not_double: 2
+not_in-expression: 1
+scope_shadow-init-outer: 2
+scope_shadow-inner-assign: 1
+scope_shadow-both-arms: 11
+assign_widen-in-arm: 5
+assign_outer-from-nested: 42
+exit_bool-in-arm: false
+compilation error: line 2:1: 'else' without an 'if'
+compilation error: line 2:1: '{' is never closed
+compilation error: line 7:1: '{' is never closed
+compilation error: line 4:5: statement after 'exit' in the same block
+compilation error: line 6:9: statement after 'exit' in the same block
+compilation error: line 8:10: variable 't' is used before its declaration
+compilation error: line 8:10: variable 'b' is used before its declaration
+compilation error: line 1:7: variable 'x' is used before its declaration
+compilation error: line 4:5: cannot assign to 'k': it is not mut
+compilation error: line 1:3: expected a constant or a variable, found end of line
+compilation error: line 1:8: expected '{' on its own line after 'if', found end of file
+compilation error: line 2:1: cannot start a statement with '}'
+compilation error: line 4:1: missing 'exit' statement
+compilation error: line 5:6: unexpected 'x' after the statement
+compilation error: line 1:8: cannot apply '!' to i32
+compilation error: line 2:6: cannot compare bool with i32
+compilation error: line 2:1: the condition of 'if' must be bool, got i32
+129 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Усі 14 результатів `ok` і 17 повідомлень `err` збігаються з моїм списком до символу, включно з позиціями. `129 passed, 0 failed` складається з 84 попередніх, 14 `ok`, 14 `.ast` і 17 `err`. Знахідок немає: компілятор поводиться правильно на всіх крайніх випадках, а нові тести тепер це фіксують.
+
+Я не бачив результату коміту Task 3, тому спочатку подивись стан:
+
+```bash
+git status --short | head -5
+git log --oneline | head -4
+```
+
+- **Якщо коміт Task 3 уже є** (верхній рядок у `git log` про Task 3), а в `git status` лише нові тести, зроби один коміт:
+  ```bash
+  git add tests/
+  git commit -m "Tests: edge cases for if/else, scopes and parser errors"
+  ```
+- **Якщо коміту Task 3 немає** (змінений `compiler.py` у статусі), зроби два коміти, щоб історія відповідала завданням:
+  ```bash
+  git add compiler.py tests/ok/if-else_basic.* tests/ok/if_no-else.* tests/ok/if-else_nested.* tests/ok/scope_shadow-type.* tests/ok/exit_in-arm.* tests/ok/not_in-condition.* tests/ok/assign_both-arms.* tests/ok/scope_shadow-restores.* tests/err/if_brace-on-line.* tests/err/if_empty-block.*
+  git commit -m "Task 3: basic blocks in codegen, entry-block slots, if/else and ! tests"
+  git add tests/
+  git commit -m "Tests: edge cases for if/else, scopes and parser errors"
+  ```
+
+Потім `git push` і пришли `git log --oneline | head -5`. Далі переходимо до `ai_usage.txt` і `check.py`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ git status --short | head -5
+ M compiler.py
+?? tests/err/assign_not-mut-in-block.expected
+?? tests/err/assign_not-mut-in-block.txt
+?? tests/err/block_never-closed.expected
+?? tests/err/block_never-closed.txt
+(lcd) ubuntu@lcd-course:~/repo$ git log --oneline | head -4
+200d04b Task 2: scope stack in the semantic pass, bool checks for if and !
+863fd8e Task 1: if/else, ! and blocks in the front end
+62e2817 Review fixes: Const as int in --ast, accept CRLF, CodeGen as visitor
+215ee49 Merge pull request #3 from kdeneshchuk/practice-4
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Task 3 ще не закомічено, тому роби два коміти, як у другому варіанті. Це один довгий `git add`, тож вставляй його окремо:
+
+```bash
+git add compiler.py tests/ok/if-else_basic.* tests/ok/if_no-else.* tests/ok/if-else_nested.* tests/ok/scope_shadow-type.* tests/ok/exit_in-arm.* tests/ok/not_in-condition.* tests/ok/assign_both-arms.* tests/ok/scope_shadow-restores.* tests/err/if_brace-on-line.* tests/err/if_empty-block.*
+```
+
+```bash
+git commit -m "Task 3: basic blocks in codegen, entry-block slots, if/else and ! tests"
+```
+
+Потім решта тестів:
+
+```bash
+git add tests/
+git commit -m "Tests: edge cases for if/else, scopes and parser errors"
+```
+
+Перевір, що нічого не лишилось неприйнятим:
+
+```bash
+git status --short | head -3
+git log --oneline | head -4
+```
+
+`git status --short` має бути порожнім, а в `git log` зверху мають стояти два нові коміти, під ними `200d04b` (Task 2). Тоді пуш:
+
+```bash
+git push
+```
+
+Пришли вивід `git log` і `git push`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ git status --short | head -3
+(lcd) ubuntu@lcd-course:~/repo$ git log --oneline | head -4
+508fda5 Tests: edge cases for if/else, scopes and parser errors
+c53c2d1 Task 3: basic blocks in codegen, entry-block slots, if/else and ! tests
+200d04b Task 2: scope stack in the semantic pass, bool checks for if and !
+863fd8e Task 1: if/else, ! and blocks in the front end
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Коміти на місці, робоче дерево чисте. Тепер запуш:
+
+```bash
+git push
+```
+
+Пришли вивід. Якщо `git push` відмовить (наприклад, `rejected`), покажи повідомлення цілком, нічого не форсуй.
+
+Далі закриваємо дві речі, без яких практику не зарахують. Спершу перевір, чи є `check.py`:
+
+```bash
+ls ~/repo
+```
+
+Це покаже, чи є в репозиторії `check.py`, чи лишився тільки `run_tests.py`, і де лежить `compiler.py`. Для `ai_usage.txt` мені потрібно знати, що вже є у файлі:
+
+```bash
+cat ~/repo/ai_usage.txt
+```
+
+Пришли обидва виводи. Я допишу `ai_usage.txt` чесно: що ми зробили разом, що ти взяла як є, а що змінила.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+ADDITIONAL TASKS — WHILE (+0.5)
+while cond on a line, then a block. Three blocks: a condition block the loop returns to, a body block, an end
+block; the body ends with a branch back to the condition — the first back edge in your IR. Nothing else changes:
+the same scope frame, the same entry-block slots, exit inside the body allowed.
+i32 mut i{1}
+i32 mut sum{0}
+while i != 11
+{
+sum := sum + i
+i := i + 1
+}
+exit sum
+Show: 55 through lli, and output.ll with the branch back.
+
+давай тепер це завдання
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Пуш можна перевірити пізніше, зараз беремо `while`. Спершу прототип на твоєму актуальному коді.
+
+`while` працює на твоєму коді: сума дає `55`, вкладені цикли `12`, `exit` усередині тіла `5`. IR валідний, і після `mem2reg` в `while.cond` з'являються `phi`-вузли для `i` і `sum`. Це повертає до теми про SSA: зворотне ребро дає `phi` із двома джерелами (`entry` і `while.body`).
+
+Змін п'ять, усі маленькі. Кожна має знайомий якір у файлі.
+
+## Крок 4.1: ключове слово
+
+У словнику `KEYWORDS` заміни рядок з `"if"` та `"else"`:
+
+```python
+    "if": "keyword", "else": "keyword", "while": "keyword",
+```
+
+## Крок 4.2: вузол `WhileNode`
+
+Вставляй перед `class ExitNode(Node):`:
+
+```python
+class WhileNode(StmtNode):
+    def __init__(self, line, col, condition, body):
+        super().__init__(line, col)
+        self.condition = condition
+        self.body = body
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.condition, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+```
+
+## Крок 4.3: парсер
+
+Перед `def parse_statement(self):` додай метод:
+
+```python
+    def parse_while(self):
+        while_tok = self.eat()
+        condition = self.parse_expr()
+        self.expect_eol()
+        body = self.parse_block("'while'")
+        return WhileNode(while_tok.line, while_tok.col, condition, body)
+
+```
+
+У `parse_statement` додай гілку **перед** перевіркою `else`, тобто одразу після гілки з `if`:
+
+```python
+        if tok.kind == "keyword" and tok.text == "while":
+            return self.parse_while()
+```
+
+## Крок 4.4: чекер
+
+У `SemanticChecker` перед `visit_not` додай:
+
+```python
+    def visit_while(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.col}: the condition of 'while' must be bool, got {cond_type}")
+        node.body.accept(self)
+
+```
+
+Кадр для тіла створює вже `visit_block`, окремого коду для scope не треба. Це і є "the same scope frame" із завдання.
+
+## Крок 4.5: кодогенерація
+
+У `CodeGen` після `visit_if` (перед порожніми рядками, що ведуть до `def lex`) додай:
+
+```python
+    def visit_while(self, node):
+        cond_bb = self.function.append_basic_block("while.cond")
+        body_bb = self.function.append_basic_block("while.body")
+        end_bb = self.function.append_basic_block("while.end")
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(cond_bb)
+        cond = node.condition.accept(self)
+        self.builder.cbranch(cond, body_bb, end_bb)
+
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(end_bb)
+```
+
+Що тут важливо:
+- Умова обчислюється **всередині `while.cond`**, а не до переходу. Інакше цикл не перечитував би змінні на кожній ітерації.
+- Перед `while.cond` потрібен `br`, бо поточний блок (наприклад `entry`) мусить закінчитись термінатором.
+- Кінець тіла повертається на `while.cond` (зворотне ребро), якщо тіло не завершилось `exit`. Та сама перевірка `is_terminated`, що в `if`.
+- Слоти (`new_slot`) не змінюються: `alloca` усе ще в `entry`.
+
+## Перевірка
+
+```bash
+python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+printf 'i32 mut i{1}\ni32 mut sum{0}\nwhile i != 11\n{\n    sum := sum + i\n    i := i + 1\n}\nexit sum\n' > /tmp/t5/while.txt
+python3 compiler.py /tmp/t5/while.txt /tmp/while.ll && lli /tmp/while.ll
+sed -n '/define/,/^}/p' /tmp/while.ll
+opt -passes=mem2reg -S /tmp/while.ll | grep phi
+```
+
+Очікую `129 passed`, потім `Program exit with result 55`. У блоках має бути `entry`, `while.cond`, `while.body`, `while.end`, а `while.body` закінчується `br label %"while.cond"`. Це зворотне ребро, яке просить завдання. `grep phi` покаже два `phi`.
+
+Пиши, що вийшло. Потім додамо тести для `while` і закомітимо.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+```python
+    def parse_statement(self):
+        tok = self.peek()
+        if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
+            return self.parse_decl()
+        if tok.kind == "keyword" and tok.text == "if":
+            return self.parse_if()
+        if tok.kind == "keyword" and tok.text == "else":
+            self.error("'else' without an 'if'")
+        if tok.kind == "ident":
+            return self.parse_assign()
+        self.error(f"cannot start a statement with '{tok.text}'")
+
+куди додати
+```
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Додай гілку для `while` одразу після гілки з `if`, перед гілкою з `else`. Результат має виглядати так:
+
+```python
+    def parse_statement(self):
+        tok = self.peek()
+        if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
+            return self.parse_decl()
+        if tok.kind == "keyword" and tok.text == "if":
+            return self.parse_if()
+        if tok.kind == "keyword" and tok.text == "while":
+            return self.parse_while()
+        if tok.kind == "keyword" and tok.text == "else":
+            self.error("'else' without an 'if'")
+        if tok.kind == "ident":
+            return self.parse_assign()
+        self.error(f"cannot start a statement with '{tok.text}'")
+```
+
+Це два нові рядки:
+
+```python
+        if tok.kind == "keyword" and tok.text == "while":
+            return self.parse_while()
+```
+
+Метод `parse_while` має бути в класі `Parser` вище, перед `parse_statement` (крок 4.3). Інакше Python видасть `AttributeError: 'Parser' object has no attribute 'parse_while'`. Порядок методів у класі не важливий для роботи, але я прошу ставити його перед `parse_statement`, щоб код читався згори вниз.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ python3 -m py_compile compiler.py && python3 run_tests.py | tail -1
+printf 'i32 mut i{1}\ni32 mut sum{0}\nwhile i != 11\n{\n    sum := sum + i\n    i := i + 1\n}\nexit sum\n' > /tmp/t5/while.txt
+129 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$ printf 'i32 mut i{1}\ni32 mut sum{0}\nwhile i != 11\n{\n    sum := sum + i\n    i := i + 1\n}\nexit sum\n' > /tmp/t5/while.txt
+(lcd) ubuntu@lcd-course:~/repo$ python3 compiler.py /tmp/t5/while.txt /tmp/while.ll && lli /tmp/while.ll
+Program exit with result 55
+(lcd) ubuntu@lcd-course:~/repo$ sed -n '/define/,/^}/p' /tmp/while.ll
+define i32 @"main"()
+{
+entry:
+  %"i" = alloca i32
+  %"sum" = alloca i32
+  store i32 1, i32* %"i"
+  store i32 0, i32* %"sum"
+  br label %"while.cond"
+while.cond:
+  %".5" = load i32, i32* %"i"
+  %".6" = icmp ne i32 %".5", 11
+  br i1 %".6", label %"while.body", label %"while.end"
+while.body:
+  %".8" = load i32, i32* %"sum"
+  %".9" = load i32, i32* %"i"
+  %".10" = add i32 %".8", %".9"
+  store i32 %".10", i32* %"sum"
+  %".12" = load i32, i32* %"i"
+  %".13" = add i32 %".12", 1
+  store i32 %".13", i32* %"i"
+  br label %"while.cond"
+while.end:
+  %".16" = load i32, i32* %"sum"
+  %"wide" = sext i32 %".16" to i64
+  %".17" = bitcast [31 x i8]* @"fmt" to i8*
+  %".18" = call i32 (i8*, ...) @"printf"(i8* %".17", i64 %"wide")
+  ret i32 0
+}
+(lcd) ubuntu@lcd-course:~/repo$ opt -passes=mem2reg -S /tmp/while.ll | grep phi
+  %sum.0 = phi i32 [ 0, %entry ], [ %.10, %while.body ]
+  %i.0 = phi i32 [ 1, %entry ], [ %.13, %while.body ]
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+`while` працює: `55`, IR містить зворотне ребро `br label %"while.cond"` в кінці `while.body`, а `mem2reg` дає два `phi` (`i` і `sum`). Блоки та IR збігаються з моїм прототипом рядок у рядок. `129 passed` лишились без змін, тобто старі програми не зламались.
+
+Тепер тести для `while`. Я вже перевірив ці програми на прототипі: `ok` дають правильний результат і валідний IR, `err` дають очікувані помилки.
+
+```bash
+cd ~/repo/tests/ok
+printf 'i32 mut i{1}\ni32 mut sum{0}\nwhile i != 11\n{\n    sum := sum + i\n    i := i + 1\n}\nexit sum\n' > while_sum.txt
+printf 'i32 mut i{0}\nwhile false\n{\n    i := 1\n}\nexit i\n' > while_never-runs.txt
+printf 'i32 mut i{0}\nwhile true\n{\n    i := i + 1\n    if i == 5\n    {\n        exit i\n    }\n}\nexit 0\n' > while_exit-in-body.txt
+printf 'i32 mut i{0}\ni32 mut n{0}\nwhile i != 3\n{\n    i32 mut j{0}\n    while j != 4\n    {\n        n := n + 1\n        j := j + 1\n    }\n    i := i + 1\n}\nexit n\n' > while_nested.txt
+printf 'i32 mut i{0}\ni32 mut s{0}\nwhile i != 3\n{\n    i32 k{10}\n    s := s + k\n    i := i + 1\n}\nexit s\n' > while_body-decl.txt
+cd ~/repo/tests/err
+printf 'i32 n{1}\nwhile n\n{\n    exit 1\n}\nexit 0\n' > while_cond-not-bool.txt
+printf 'while true\n{\n}\nexit 0\n' > while_empty-block.txt
+printf 'while false\n{\n    i32 z{1}\n}\nexit z\n' > while_var-after-block.txt
+cd ~/repo
+```
+
+Генеруємо очікуване:
+
+```bash
+for f in while_sum while_never-runs while_exit-in-body while_nested while_body-decl; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in while_cond-not-bool while_empty-block while_var-after-block; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+for f in while_sum while_never-runs while_exit-in-body while_nested while_body-decl; do echo "$f: $(sed 's/Program exit with result //' tests/ok/$f.expected)"; done
+cat tests/err/while_cond-not-bool.expected tests/err/while_empty-block.expected tests/err/while_var-after-block.expected
+python3 run_tests.py | tail -1
+```
+
+Очікую `55`, `0`, `5`, `12`, `30`, потім три помилки:
+- `line 2:1: the condition of 'while' must be bool, got i32`;
+- `line 2:1: empty block`;
+- `line 5:6: variable 'z' is used before its declaration`.
+
+Підсумок має бути `129 + 5 + 5 + 3 = 142 passed, 0 failed`.
+
+Коли все збігається, коміт:
+
+```bash
+git add compiler.py tests/
+git commit -m "Additional task: while loop (condition/body/end blocks, back edge)"
+git push
+```
+
+Пришли вивід.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ cd ~/repo/tests/ok
+printf 'i32 mut i{1}\ni32 mut sum{0}\nwhile i != 11\n{\n    sum := sum + i\n    i := i + 1\n}\nexit sum\n' > while_sum.txt
+printf 'i32 mut i{0}\nwhile false\n{\n    i := 1\n}\nexit i\n' > while_never-runs.txt
+printf 'i32 mut i{0}\nwhile true\n{\n    i := i + 1\n    if i == 5\n    {\n        exit i\n    }\n}\nexit 0\n' > while_exit-in-body.txt
+printf 'i32 mut i{0}\ni32 mut n{0}\nwhile i != 3\n{\n    i32 mut j{0}\n    while j != 4\n    {\n        n := n + 1\n        j := j + 1\n    }\n    i := i + 1\n}\nexit n\n' > while_nested.txt
+printf 'i32 mut i{0}\ni32 mut s{0}\nwhile i != 3\n{\n    i32 k{10}\n    s := s + k\n    i := i + 1\n}\nexit s\n' > while_body-decl.txt
+cd ~/repo/tests/err
+printf 'i32 n{1}\nwhile n\n{\n    exit 1\n}\nexit 0\n' > while_cond-not-bool.txt
+printf 'while true\n{\n}\nexit 0\n' > while_empty-block.txt
+printf 'while false\n{\n    i32 z{1}\n}\nexit z\n' > while_var-after-block.txt
+cd ~/repo
+(lcd) ubuntu@lcd-course:~/repo$ for f in while_sum while_never-runs while_exit-in-body while_nested while_body-decl; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in while_cond-not-bool while_empty-block while_var-after-block; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+for f in while_sum while_never-runs while_exit-in-body while_nested while_body-decl; do echo "$f: $(sed 's/Program exit with result //' tests/ok/$f.expected)"; done
+cat tests/err/while_cond-not-bool.expected tests/err/while_empty-block.expected tests/err/while_var-after-block.expected
+python3 run_tests.py | tail -1
+while_sum: 55
+while_never-runs: 0
+while_exit-in-body: 5
+while_nested: 12
+while_body-decl: 30
+compilation error: line 2:1: the condition of 'while' must be bool, got i32
+compilation error: line 2:1: empty block
+compilation error: line 5:6: variable 'z' is used before its declaration
+142 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Усе збігається: `55`, `0`, `5`, `12`, `30`, три помилки з потрібними позиціями, `142 passed, 0 failed`. Тепер коміт і пуш. Роби двома окремими блоками, щоб вставка не злилася:
+
+```bash
+git add compiler.py tests/
+git commit -m "Additional task: while loop (condition/body/end blocks, back edge)"
+```
+
+```bash
+git status --short | head -3
+git log --oneline | head -5
+git push
+```
+
+`git status --short` має бути порожнім. У `git log` зверху має стояти коміт про `while`, під ним `508fda5`, `c53c2d1` (Task 3), `200d04b` (Task 2) і `863fd8e` (Task 1). Пришли вивід `git push`.
+
+Після цього лишається неготове лише те, що не стосується коду:
+1. `ai_usage.txt`: покажи `cat ~/repo/ai_usage.txt` і `ls ~/repo`.
+2. `check.py` і розташування `src/compiler.py`: питання до викладача, якщо цих файлів у репозиторії немає.
+3. Warm-up на папері: твої відповіді мені на перевірку.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+[вкладення: attachment.txt] перевір спочтаку важно чи все ми виконали правильно
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Читаю не лише код, а й перевіряю цей файл у роботі, бо в завданні є кілька місць, де `while` легко зламати.
+
+Усе зроблено правильно. Єдина відмінність від мого прототипа в тому, що ти поставила `visit_while` перед `visit_if`. Код однаковий, порядок методів не важливий.
+
+## Перевірка по вимогах `while`
+
+| Вимога | Статус |
+|---|---|
+| `while cond` на одному рядку, потім блок | ✅ (`parse_while` через `parse_block("'while'")`) |
+| Три блоки: умова, тіло, кінець | ✅ (`while.cond`, `while.body`, `while.end`) |
+| Умова обчислюється в блоці умови, куди повертається цикл | ✅ |
+| Тіло закінчується переходом назад до умови (зворотне ребро) | ✅ `br label %"while.cond"` |
+| Той самий кадр області видимості | ✅ (тіло це `BlockNode`, кадр створює `visit_block`) |
+| Ті самі слоти в `entry` | ✅ (`new_slot` не змінювався) |
+| `exit` усередині тіла | ✅ (перевірка `is_terminated`, `br` не дописується) |
+| `55` через `lli` | ✅ |
+| `output.ll` з гілкою назад | ✅ |
+
+Додатково перевірив на твоєму файлі кілька випадків, яких немає в завданні. Усі дали правильний результат, валідний IR і валідний IR після `mem2reg`:
+- два цикли поспіль (`6`);
+- `if` усередині `while` з `else` (`3`);
+- цикл за `bool`-змінною, яку скидає `if` (`4`);
+- `while !false` з виходом через `exit` у тілі (`3`);
+- `else` після `while` дає `'else' without an 'if'` (правильно, `while` не має `else`).
+
+Одна деталь для довідки: у циклі з `i64` і множенням на `3000000000` результат переповнюється і загортається (це поведінка LLVM `mul`). Мова не визначає переповнення, тож це не помилка. У тестах це не потрібно.
+
+Косметика, не обов'язково: у `visit_while` після `position_at_end(end_bb)` лишився рядок із пробілами (рядок 467), і ще один зайвий пробіл після `self.scopes.pop() ` у `visit_block`. Можна прибрати:
+
+```bash
+sed -i 's/[ \t]*$//' compiler.py
+python3 run_tests.py | tail -1
+```
+
+Має лишитись `142 passed, 0 failed`.
+
+Якщо коміт про `while` ще не зроблений, виконай його і `git push` з попередніх повідомлень. Потім залишається `ai_usage.txt`, `check.py` і warm-up. Для `ai_usage.txt` покажи `ls ~/repo` та `cat ~/repo/ai_usage.txt`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+[вкладення: attachment.txt] [вкладення: w05-practice.pdf] тепер уважно ще раз все прочитай
+(lcd) ubuntu@lcd-course:~/repo$ ls tests/
+err                            test_expr_in_assign.txt            test_missing_initialiser.txt         test_redeclaration.expected
+ok                             test_extra_after_chain.expected    test_mixed_var_const_chain.expected  test_redeclaration.txt
+test_after_exit.expected       test_extra_after_chain.txt         test_mixed_var_const_chain.txt       test_regression_not_mut.expected
+test_after_exit.txt            test_extra_tokens.expected         test_mut.expected                    test_regression_not_mut.txt
+test_assign_const.expected     test_extra_tokens.txt              test_mut.txt                         test_spacing.expected
+test_assign_const.txt          test_invalid_statement.expected    test_operation.expected              test_spacing.txt
+test_colon_no_equals.expected  test_invalid_statement.txt         test_operation.txt                   test_subtraction.expected
+test_colon_no_equals.txt       test_left_assoc.ast                test_operator_after_brace.expected   test_subtraction.txt
+test_const.expected            test_left_assoc.expected           test_operator_after_brace.txt        test_trailing_operator.expected
+test_const.txt                 test_left_assoc.txt                test_practice2_regression.ast        test_trailing_operator.txt
+test_double_operator.expected  test_left_assoc_mult.ast           test_practice2_regression.expected   test_undeclared_in_chain.expected
+test_double_operator.txt       test_left_assoc_mult.expected      test_practice2_regression.txt        test_undeclared_in_chain.txt
+test_exit_constant.expected    test_left_assoc_mult.txt           test_precedence_basic.ast            test_unknown_byte.expected
+test_exit_constant.txt         test_letter_in_number.expected     test_precedence_basic.expected       test_unknown_byte.txt
+test_exit_no_expr.expected     test_letter_in_number.txt          test_precedence_basic.txt            test_unterminated_brace.expected
+test_exit_no_expr.txt          test_missing_exit.expected         test_precedence_middle.ast           test_unterminated_brace.txt
+test_expr_in_assign.ast        test_missing_exit.txt              test_precedence_middle.expected      test_use_before_decl.expected
+test_expr_in_assign.expected   test_missing_initialiser.expected  test_precedence_middle.txt           test_use_before_decl.txt
+(lcd) ubuntu@lcd-course:~/repo$ 
+
+і треба уважно переглянути чи виконали ми всі умови покрили все тестами і чи праивльно все відпрацьовує
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Роблю повний аудит: по кожному пункту PDF, по твоєму останньому `compiler.py`, і окремо перевіряю IR усіх програм автоматично.
+
+Компілятор виконує всі умови Practice 5, включно з `while`. Нижче повна звірка з PDF рядок за рядком, автоматична перевірка IR і кілька прогалин у тестах та в здачі. Їх треба закрити, перш ніж показувати викладачу.
+
+## Що я перевірив
+
+1. Твій останній `compiler.py` відрізняється від попередньої версії лише пробілами в кінці рядків.
+2. Усі програми з PDF у твоєму компіляторі дають очікувані результати: Task 1 `15`, програма з `!` `true`, warm-up `20`, `phi`-програма `1`, `while` `55`.
+3. Окремим скриптом перевірив IR **43 валідних програм** (приклади з PDF і всі наші тести). Скрипт шукав `alloca` поза `entry`, блоки з нулем або двома термінаторами, інструкції після термінатора, помилки верифікатора LLVM до і після `mem2reg`, `alloca`, які `mem2reg` не зміг прибрати. **Проблем 0.**
+4. Усі 12 помилок із PDF (7 парсерних і 5 семантичних) видають рівно той текст і ту позицію, що вказані.
+
+## Звірка з PDF
+
+| Пункт | Статус |
+|---|---|
+| **Task 1**: `if`/`else`/`!` у лексері й парсері, `!=` і `!` розрізняються | ✅ |
+| `{`, `}` і `else` стоять окремо, блок не порожній | ✅ |
+| `exit` останнім у блоці, після нього нічого | ✅ |
+| Вкладені блоки, `!a == b`, `! b` з пробілом, `exit !c` | ✅ |
+| Лексер не парує дужки, `i32 x{5` дає помилку парсера `1:8` | ✅ |
+| `--ast` показує `If`, `Block`, `Not`, warm-up збігається | ✅ |
+| 7 помилок парсера | ✅ у коді, ⚠️ одна без тесту (див. нижче) |
+| **Task 2**: стек кадрів, shadowing, `lookup`, `node.decl`, 5 помилок | ✅ (усі 5 у `tests/err`) |
+| **Task 3**: `then`/`else`/`merge`, `cbranch` з об'єктами блоків | ✅ |
+| `alloca` тільки в `entry`, один термінатор на блок | ✅ (автоперевірка) |
+| `exit` у гілці, `merge` без передників валідний | ✅ |
+| `phi` від `mem2reg` | ✅ `%r.0 = phi i32 [ 1, %then ], [ 2, %else ]` |
+| `tests/ok` ≥ 6, `tests/err` ≥ 6, назви за фічею, усі 12 пунктів покриття | ✅ (27 і 27) |
+| Програми Practice 3 і 4 друкують те саме | ✅ (142 passed) |
+| Тільки `llvmlite.ir`, IR тільки через `str(module)` | ✅ |
+| **While**: три блоки, зворотне ребро, `55` | ✅ |
+| `.ast` для нових програм | ✅ |
+| `python3 check.py` зелений + таблиця | ❌ файлу немає |
+| `ai_usage.txt` оновлено | ❓ ще не бачив |
+
+## Прогалини
+
+**1. Однієї помилки з PDF немає в тестах.** `line 4:1: expected '{' on its own line after 'if', got 'a'` працює правильно, але тесту на неї немає. Також не покрите правило, що `{`, `}` і `else` стоять окремо на рядку: `else {`, `} else`, `{ exit 1` і `while true {`. Я перевірив усі чотири, позиції правильні.
+
+**2. Кілька корисних `ok`-тестів:**
+- `exit !c` (вказано в PDF прямо);
+- програма з блоками і кінцями рядків CRLF (закріплює виправлення з ревью Practice 4);
+- порожні рядки й табуляція всередині блоку.
+
+**3. `check.py`.** Про розташування не хвилюйся. Practice 2 каже прямо: *"Keep one layout for the whole course: compiler.py at the root, a tests/ folder next to it"*. Тому `compiler.py` у корені правильний, а `src/compiler.py` у PDF Practice 5 суперечить цьому правилу. `check.py` ніде раніше не визначався, тож це найімовірніше назва тест-раннера, роль якого в тебе виконує `run_tests.py`. Найпростіше рішення: додати маленький `check.py`, який запускає `run_tests.py`. Тоді команда з PDF працює буквально.
+
+## Команди
+
+Нові тести:
+
+```bash
+cd ~/repo/tests/ok
+printf 'bool c{false}\nexit !c\n' > not_exit-operand.txt
+printf 'i32 mut a{1}\r\nif a == 1\r\n{\r\n    a := 2\r\n}\r\nelse\r\n{\r\n    a := 3\r\n}\r\nexit a\r\n' > block_crlf.txt
+printf 'i32 mut a{1}\nif a == 1\n{\n\n\ta := 5\n\n}\nexit a\n' > block_blank-lines-tabs.txt
+cd ~/repo/tests/err
+printf 'i32 mut a{10}\nbool b{true}\nif b\na := a + 5\n{\n    a := 1\n}\nexit a\n' > if_missing-brace.txt
+printf 'bool b{true}\nif b\n{\n    exit 1\n}\nelse {\n    exit 2\n}\nexit 0\n' > else_brace-on-line.txt
+printf 'bool b{true}\nif b\n{\n    exit 1\n} else\n{\n    exit 2\n}\nexit 0\n' > rbrace_else-on-line.txt
+printf 'if true\n{   exit 1\n}\nexit 0\n' > lbrace_stmt-on-line.txt
+printf 'while true {\n    exit 1\n}\nexit 0\n' > while_brace-on-line.txt
+cd ~/repo
+```
+
+`check.py` у корені:
+
+```bash
+cat > ~/repo/check.py <<'EOF'
+import os
+import runpy
+
+runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_tests.py"), run_name="__main__")
+EOF
+```
+
+Генерація очікуваного виводу і перевірка:
+
+```bash
+for f in not_exit-operand block_crlf block_blank-lines-tabs; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_missing-brace else_brace-on-line rbrace_else-on-line lbrace_stmt-on-line while_brace-on-line; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+cat tests/ok/{not_exit-operand,block_crlf,block_blank-lines-tabs}.expected
+cat tests/err/{if_missing-brace,else_brace-on-line,rbrace_else-on-line,lbrace_stmt-on-line,while_brace-on-line}.expected
+python3 check.py | tail -1
+```
+
+Очікую:
+- `true`, `2`, `5`;
+- `4:1 expected '{' on its own line after 'if', got 'a'`, `6:6 unexpected '{'...`, `5:3 unexpected 'else'...`, `2:5 unexpected 'exit'...`, `1:12 unexpected '{'...`;
+- `153 passed, 0 failed` (142 + 3 + 3 `.ast` + 5).
+
+Коміт (сюди ж потрапить `while`, якщо ти його ще не закомітила):
+
+```bash
+git add compiler.py check.py tests/
+git commit -m "Tests for brace-placement errors, CRLF and exit !c; check.py runs the test suite"
+git push
+```
+
+## Warm-up на папері: ключ для самоперевірки
+
+Спершу зроби сама, потім звір:
+- **внутрішній `exit x`** (рядок 8) посилається на `i64 mut x{20}` і друкує `20`;
+- **середній `exit x`** (рядок 10) посилається на `bool mut x{true}`; він друкував би `true`, але не виконується;
+- **останній рядок** `exit x` посилається на `i32 mut x{10}`; програма до нього **не доходить**;
+- **кадри**: семантичний прохід пушить і попає по **2** (два блоки). Глобальний кадр не пушиться, він існує з самого початку;
+- **basic blocks**: **5** разом з `entry` (`entry`, `then`, `merge`, `then.1`, `merge.1`). Із них 4 створюють два `if`, і саме про ці чотири каже PDF: "four blocks, each ending once".
+
+## Що показати викладачу
+
+1. `python3 compiler.py --ast tests/ok/scope_shadow-type.txt` і `lli` для warm-up: `20`.
+2. `lli` для `tests/ok/if-else_basic.txt`: `15`.
+3. Три помилки Task 1 і п'ять помилок Task 2 з `line:column` (усі є в `tests/err`).
+4. `opt -passes=mem2reg -S` для `assign_both-arms` із рядком `phi`.
+5. `output.ll` warm-up з блоками, `while_sum` з `br label %"while.cond"` і `55`.
+6. Таблиця `python3 check.py`.
+
+Лишається `ai_usage.txt`. Пришли `ls ~/repo` і `cat ~/repo/ai_usage.txt`, і я допишу розділ для Practice 5: review fixes, Tasks 1–3, тести, `while`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+3. `check.py`. Про розташування не хвилюйся. Practice 2 каже прямо: "Keep one layout for the whole course: compiler.py at the root, a tests/ folder next to it". Тому `compiler.py` у корені правильний, а `src/compiler.py` у PDF Practice 5 суперечить цьому правилу. `check.py` ніде раніше не визначався, тож це найімовірніше назва тест-раннера, роль якого в тебе виконує `run_tests.py`. Найпростіше рішення: додати маленький `check.py`, який запускає `run_tests.py`. Тоді команда з PDF працює буквально.
+процитуй це в завданні 5 що там скаазано
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Ось де в PDF Practice 5 згадані `src/compiler.py` і `check.py`. Таких місць чотири.
+
+1. **Розділ "The compiler interface"** (стор. 1, одразу після Grading). Дослівно:
+   > "Unchanged: python3 src/compiler.py input.txt output.ll, --ast, lli output.ll, python3 check.py."
+
+   Одразу після цього рядка сказано, що цього тижня до інструментів додається `opt -passes=mem2reg -S output.ll`.
+
+2. **Task 3, абзац "Tests"** (стор. 4, останнє речення абзацу). Програми з Practice 3 і 4 мають друкувати те саме, що й раніше, а `python3 check.py` має бути зеленим.
+
+3. **Task 3, рядок "Show:"** (стор. 4, кінець Task 3). Серед того, що треба показати, останнім пунктом стоїть таблиця `check.py` ("the check.py table").
+
+4. **Розділ "Submission"** (стор. 5):
+   - запушити в репозиторій `src/compiler.py`, `tests/`, `.ast`-файли для нових програм і `ai_usage.txt`;
+   - показати викладачу серед іншого таблицю `check.py`.
+
+Для порівняння, Practice 2, розділ "Your repository", вимагає одну структуру на весь курс: `compiler.py` у корені, поруч папка `tests/` і короткий `README.md`.
+
+Тож у PDF Practice 5 написано "Unchanged", тобто ніби так було й раніше, але шлях `src/compiler.py` суперечить правилу з Practice 2. У матеріалах проєкту, які я переглянув (Practice 1–4), я не знайшов, де визначався б `check.py`. Тому мій висновок про те, що це назва тест-раннера, лише припущення. Найнадійніше уточнити у викладача одним питанням: чи лишати `compiler.py` у корені за правилом Practice 2, і чи достатньо `check.py`, який запускає наявний `run_tests.py`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+```python
+import glob
+import subprocess
+import sys
+
+OUT_LL = "/tmp/run_tests_out.ll"
+
+
+def run_output_test(txt_path):
+    """Compile, run through lli if it compiled, compare with .expected."""
+    exp_path = txt_path[:-4] + ".expected"
+    try:
+        with open(exp_path) as f:
+            expected = f.read().strip()
+    except FileNotFoundError:
+        return None
+
+    result = subprocess.run(
+        ["python3", "compiler.py", txt_path, OUT_LL],
+        capture_output=True, text=True
+    )
+
+    if result.returncode == 0:
+        lli_result = subprocess.run(
+            ["lli", OUT_LL],
+            capture_output=True, text=True
+        )
+        actual = lli_result.stdout.strip()
+    else:
+        actual = result.stderr.strip()
+
+    return actual == expected, actual, expected
+
+
+def run_ast_test(ast_path):
+    """Compare --ast output with the .ast snapshot."""
+    txt_path = ast_path[:-4] + ".txt"
+    with open(ast_path) as f:
+        expected = f.read().strip()
+
+    result = subprocess.run(
+        ["python3", "compiler.py", "--ast", txt_path],
+        capture_output=True, text=True
+    )
+    actual = result.stdout.strip()
+
+    return actual == expected, actual, expected
+
+
+def report(path, ok, actual, expected, counters):
+    if ok:
+        counters["passed"] += 1
+        print(f"PASS  {path}")
+    else:
+        counters["failed"] += 1
+        print(f"FAIL  {path}")
+        print(f"      expected: {expected!r}")
+        print(f"      actual:   {actual!r}")
+
+
+def main():
+    counters = {"passed": 0, "failed": 0}
+
+    programs = sorted(
+        glob.glob("tests/*.txt")
+        + glob.glob("tests/ok/*.txt")
+        + glob.glob("tests/err/*.txt")
+    )
+    for path in programs:
+        outcome = run_output_test(path)
+        if outcome is None:
+            continue
+        report(path, *outcome, counters)
+
+    for path in sorted(glob.glob("tests/**/*.ast", recursive=True)):
+        report(path, *run_ast_test(path), counters)
+
+    print(f"\n{counters['passed']} passed, {counters['failed']} failed")
+    sys.exit(1 if counters["failed"] else 0)
+
+
+if __name__ == "__main__":
+    main()
+
+
+в мене є run_tests.py
+це те саме що чек?
+```
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+За змістом так. `run_tests.py` робить те, що в PDF називається "python3 check.py is green" і "the check.py table":
+
+- проходить усі програми в `tests/`, `tests/ok/` і `tests/err/`;
+- для тих, що компілюються, запускає `lli` і порівнює вивід з `.expected`; для тих, що не компілюються, порівнює повідомлення з stderr;
+- окремо звіряє `--ast` з `.ast`-снапшотами;
+- друкує рядок `PASS`/`FAIL` для кожного тесту, а внизу підсумок `N passed, M failed`;
+- виходить з кодом 1, якщо щось упало.
+
+Список `PASS ...` і є "таблиця", а "green" означає `0 failed`. Як саме має виглядати `check.py`, PDF не визначає, тож формально це моє тлумачення. Імовірно, викладач просто хоче побачити, що всі тести проходять.
+
+Одна деталь у твоєму `run_tests.py`: шляхи відносні (`"compiler.py"`, `"tests/*.txt"`), тому він працює тільки з кореня репозиторію. Мій попередній `check.py` цього не враховував. Ось виправлена версія, яка спершу переходить у корінь репо, тож працює звідки завгодно:
+
+```bash
+cat > ~/repo/check.py <<'EOF'
+import os
+import runpy
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(ROOT)
+runpy.run_path(os.path.join(ROOT, "run_tests.py"), run_name="__main__")
+EOF
+cd ~/repo && python3 check.py | tail -1
+```
+
+Має бути той самий підсумок, що й у `python3 run_tests.py`.
+
+Можна обійтися без окремого файлу і просто перейменувати `git mv run_tests.py check.py`. Але тоді треба оновити `README.md`, де, ймовірно, згадано `run_tests.py`. Обгортка безпечніша: працюють обидві команди, і нічого не ламається.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+а що ти змінив?
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Змінив один рядок у `check.py`. Додав `os.chdir(ROOT)`, тобто перехід у папку репозиторію перед запуском тестів.
+
+**Перша версія:**
+```python
+import os
+import runpy
+
+runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_tests.py"), run_name="__main__")
+```
+
+**Нова версія:**
+```python
+import os
+import runpy
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(ROOT)                                    # ← єдина нова дія
+runpy.run_path(os.path.join(ROOT, "run_tests.py"), run_name="__main__")
+```
+
+Шлях до папки я виніс у змінну `ROOT`, щоб не обчислювати його двічі. Це не змінює поведінку.
+
+**Навіщо `os.chdir`:** твій `run_tests.py` використовує відносні шляхи `"compiler.py"` і `"tests/*.txt"`. Python шукає їх відносно поточної папки, з якої запущено команду, а не відносно файлу скрипта:
+
+- `cd ~/repo && python3 check.py` працює в обох версіях;
+- `cd ~ && python3 repo/check.py`: перша версія знайшла б `run_tests.py`, але той не знайшов би жодного тесту і `compiler.py`, і показав би `0 passed, 0 failed`. Нова версія переходить у `~/repo` і працює правильно.
+
+Якщо ти завжди запускаєш із `~/repo`, різниці немає. Нова версія просто надійніша.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+так а навіщо нам чек, в нас вже є код який запускає тести
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Ти права, технічно `check.py` не потрібен. Тести вже запускає `run_tests.py`, і він робить усе, що треба.
+
+Я пропонував `check.py` з однієї причини: PDF буквально пише `python3 check.py`. Якщо викладач на перевірці набере саме цю команду, він отримає `No such file or directory`. Обгортка лише прибирає цей ризик, нового функціоналу вона не додає.
+
+Але є аргументи, що вона зайва:
+- `check.py` ніде в курсі не визначався, тож, імовірно, це просто назва тест-раннера з шаблону викладача, а не вимога мати файл саме з такою назвою;
+- у твоєму `README.md` (за правилом Practice 2) вже описано, як запускати тести, і в попередніх PR викладач приймав `run_tests.py`;
+- зайвий файл, що дублює інший, — це трохи шуму в репозиторії.
+
+Тому обидва варіанти нормальні:
+1. **Без `check.py`.** На здачі показуєш `python3 run_tests.py` і кажеш: "це мій check.py, він описаний у README". Найчистіший варіант.
+2. **З обгорткою.** Якщо хочеш, щоб команда з PDF спрацювала буквально.
+
+Я б обрав перший варіант. Якщо сумніваєшся, напиши викладачу одне коротке питання про `check.py` і `src/compiler.py` разом, бо обидва суперечать структурі з Practice 2. Якщо `check.py` ти вже створила, можна його не комітити або видалити: `rm ~/repo/check.py`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+Команди
+Нові тести:
+bash
+
+```bash
+cd ~/repo/tests/ok
+printf 'bool c{false}\nexit !c\n' > not_exit-operand.txt
+printf 'i32 mut a{1}\r\nif a == 1\r\n{\r\n    a := 2\r\n}\r\nelse\r\n{\r\n    a := 3\r\n}\r\nexit a\r\n' > block_crlf.txt
+printf 'i32 mut a{1}\nif a == 1\n{\n\n\ta := 5\n\n}\nexit a\n' > block_blank-lines-tabs.txt
+cd ~/repo/tests/err
+printf 'i32 mut a{10}\nbool b{true}\nif b\na := a + 5\n{\n    a := 1\n}\nexit a\n' > if_missing-brace.txt
+printf 'bool b{true}\nif b\n{\n    exit 1\n}\nelse {\n    exit 2\n}\nexit 0\n' > else_brace-on-line.txt
+printf 'bool b{true}\nif b\n{\n    exit 1\n} else\n{\n    exit 2\n}\nexit 0\n' > rbrace_else-on-line.txt
+printf 'if true\n{   exit 1\n}\nexit 0\n' > lbrace_stmt-on-line.txt
+printf 'while true {\n    exit 1\n}\nexit 0\n' > while_brace-on-line.txt
+cd ~/repo
+тоді робимо тільки це? все інше у нас правильно виконано?
+```
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Так, з коду більше нічого не треба. Компілятор виконує всі умови Practice 5 і `while`, і це я перевірив автоматично. Ці 8 тестів лише закривають прогалини в покритті. Після створення файлів треба ще згенерувати для них очікуваний вивід, інакше `run_tests.py` їх пропустить (він ігнорує `.txt` без `.expected`).
+
+**1. Створи тести** (команди, які ти процитувала).
+
+**2. Згенеруй очікуваний вивід і перевір:**
+
+```bash
+cd ~/repo
+for f in not_exit-operand block_crlf block_blank-lines-tabs; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_missing-brace else_brace-on-line rbrace_else-on-line lbrace_stmt-on-line while_brace-on-line; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+cat tests/ok/{not_exit-operand,block_crlf,block_blank-lines-tabs}.expected
+cat tests/err/{if_missing-brace,else_brace-on-line,rbrace_else-on-line,lbrace_stmt-on-line,while_brace-on-line}.expected
+python3 run_tests.py | tail -1
+```
+
+Очікую `true`, `2`, `5`. Помилки мають бути на позиціях `4:1`, `6:6`, `5:3`, `2:5` і `1:12`. Підсумок: `153 passed, 0 failed`.
+
+**3. Коміт і пуш:**
+
+```bash
+git add compiler.py tests/
+git commit -m "Tests: brace placement errors, CRLF blocks, exit !c"
+git push
+```
+
+`compiler.py` у `git add` на випадок, якщо `while` ще не закомічений. Якщо закомічений, git просто нічого не додасть. Якщо ти створювала `check.py`, але вирішила його не тримати, видали його перед комітом: `rm check.py`.
+
+## Що лишилося поза кодом
+
+Без цього практику не зарахують або не перевірять:
+
+1. **`ai_usage.txt`**: обов'язковий, без нього 0 за практику. Пришли `cat ~/repo/ai_usage.txt`, і я допишу розділ Practice 5.
+2. **Pull request** `practice-5` → `main` з рецензентом `vovaskochko`. Здача в Moodle складається з посилання на репозиторій, посилання на PR і `ai_usage.txt` (так у Practice 2).
+3. **Warm-up на папері**: три відповіді й два підрахунки. Ключ для звірки я дав у попередньому повідомленні.
+4. **Необов'язково:** коротке питання викладачу про `src/compiler.py` і `check.py`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ cd ~/repo
+for f in not_exit-operand block_crlf block_blank-lines-tabs; do
+  python3 compiler.py tests/ok/$f.txt /tmp/x.ll && lli /tmp/x.ll > tests/ok/$f.expected
+  python3 compiler.py --ast tests/ok/$f.txt > tests/ok/$f.ast
+done
+for f in if_missing-brace else_brace-on-line rbrace_else-on-line lbrace_stmt-on-line while_brace-on-line; do
+  python3 compiler.py tests/err/$f.txt /tmp/x.ll 2> tests/err/$f.expected
+done
+cat tests/ok/{not_exit-operand,block_crlf,block_blank-lines-tabs}.expected
+cat tests/err/{if_missing-brace,else_brace-on-line,rbrace_else-on-line,lbrace_stmt-on-line,while_brace-on-line}.expected
+python3 run_tests.py | tail -1
+Program exit with result true
+Program exit with result 2
+Program exit with result 5
+compilation error: line 4:1: expected '{' on its own line after 'if', got 'a'
+compilation error: line 6:6: unexpected '{' after the statement
+compilation error: line 5:3: unexpected 'else' after the statement
+compilation error: line 2:5: unexpected 'exit' after the statement
+compilation error: line 1:12: unexpected '{' after the statement
+153 passed, 0 failed
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Усе збіглося: три результати `true`, `2`, `5`, п'ять помилок з очікуваними позиціями (`4:1`, `6:6`, `5:3`, `2:5`, `1:12`) і `153 passed, 0 failed`.
+
+Тепер коміт і пуш, двома окремими блоками:
+
+```bash
+git add compiler.py tests/
+git commit -m "Tests: brace placement errors, CRLF blocks, exit !c"
+```
+
+```bash
+git status --short | head -3
+git log --oneline | head -5
+git push
+```
+
+`git status --short` має бути порожнім. Якщо раніше створила `check.py` і не хочеш його тримати, видали перед `git add`: `rm check.py`. Інакше він теж потрапить у коміт, у цьому разі це нормально.
+
+Лишилося те, що не стосується коду:
+1. **`ai_usage.txt`**: пришли `cat ~/repo/ai_usage.txt`, і я допишу розділ Practice 5.
+2. **Pull request** `practice-5` → `main` з рецензентом `vovaskochko`.
+3. **Warm-up на папері**: зроби сама, потім звір з ключем, який я давав вище.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+(lcd) ubuntu@lcd-course:~/repo$ git log --oneline | head -5
+34eb4a8 Additional task: while loop (condition/body/end blocks, back edge)
+508fda5 Tests: edge cases for if/else, scopes and parser errors
+c53c2d1 Task 3: basic blocks in codegen, entry-block slots, if/else and ! tests
+200d04b Task 2: scope stack in the semantic pass, bool checks for if and !
+863fd8e Task 1: if/else, ! and blocks in the front end
+(lcd) ubuntu@lcd-course:~/repo$
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+`while` уже закомічений (`34eb4a8`), а коміту з 8 новими тестами в історії ще немає. Тож зроби його зараз:
+
+```bash
+git add tests/
+git commit -m "Tests: brace placement errors, CRLF blocks, exit !c"
+```
+
+```bash
+git status --short | head -3
+git log --oneline | head -3
+git push
+```
+
+`git status --short` має бути порожнім, а зверху в `git log` має з'явитись коміт з тестами. Пришли вивід `git push`.
+
+Після цього лишається `ai_usage.txt`: пришли `cat ~/repo/ai_usage.txt`, і я допишу розділ Practice 5.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+давай тепер оновимо рідмі
+ось  з 4 практки
+
+```markdown
+# Languages and Compilers Design — Deneshchuk
+
+## Current status
+A compiler for a small language with `i32`/`i64`/`bool` variable
+declarations (const by default, `mut` for mutable), assignments, `exit`,
+and comparisons. Source is tokenized by a hand-written lexer, parsed by a
+hand-written recursive-descent parser into an AST, checked by a
+`SemanticChecker` visitor that resolves names and types before any LLVM
+instruction exists, and compiled to LLVM IR via llvmlite by a walk over
+that tree. The initialiser and the right side of `:=` accept a chain of
+`+`, `-`, `*` with real precedence and left associativity, optionally
+followed by one `==`/`!=` comparison. An `i32` value widens into `i64`
+where needed (`sext`); nothing else converts.
+
+## Run the compiler
+    python3 compiler.py input.txt output.ll      # compile
+    python3 compiler.py --ast input.txt           # print the AST, write nothing
+    python3 compiler.py --tokens input.txt         # print the token list, write nothing
+    lli output.ll                                  # quick run, no linking
+    llc -filetype=obj -relocation-model=pic output.ll -o output.o
+    clang -fPIE output.o -o program && ./program
+
+## Language
+    i32 x{5}                # const declaration, initialiser mandatory
+    i64 mut y{10}            # mutable declaration
+    bool b{true}             # bool declaration, true/false only
+    y := x + 3                # assignment (mut only), same rules as an initialiser
+    i32 z{2 + 3 * 4}          # chains: * binds tighter than + and -
+    bool r{x == y}            # one comparison per expression, weaker than + - *
+    exit y                    # exit y, exit 42, or exit b; must be the last line
+
+## Type rules
+A decimal constant takes the narrowest type it fits (`i32`, else `i64`,
+else an error). `+ - *` take two integers and produce the wider type; a
+`bool` operand is an error. `==`/`!=` take two integers of any width or
+two `bool`s and produce `bool`; mixing `bool` with an integer is an
+error. An `i32` may initialise or be assigned to an `i64` variable;
+nothing else narrows or crosses the integer/`bool` line.
+
+## Run tests
+    python3 run_tests.py
+
+Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
+its `.expected`: compiles, runs the result through `lli` when compilation
+succeeds, and otherwise compares the compiler's stderr. Prints a
+PASS/FAIL line per test and a summary; exits non-zero if anything failed.
+
+Valid programs write output.ll and produce no stderr. Invalid programs
+print `compilation error: line L:C: ...` to stderr and exit non-zero,
+writing no output file.
+
+```
+
+------------------------------------------------------------
+
+ВІДПОВІДЬ:
+Ось оновлений `README.md`. Формат і стиль взяв з твоєї версії Practice 4 (код з відступом у 4 пробіли). Замінюй весь вміст файлу:
+
+```markdown
+# Languages and Compilers Design — Deneshchuk
+
+## Current status
+A compiler for a small language with `i32`/`i64`/`bool` variable
+declarations (const by default, `mut` for mutable), assignments, `exit`,
+comparisons, `!`, `if`/`else` and `while` with blocks. Source is
+tokenized by a hand-written lexer, parsed by a hand-written
+recursive-descent parser into an AST, checked by a `SemanticChecker`
+visitor that resolves names, scopes and types before any LLVM
+instruction exists, and compiled to LLVM IR via llvmlite by a walk over
+that tree. The initialiser and the right side of `:=` accept a chain of
+`+`, `-`, `*` with real precedence and left associativity, optionally
+followed by one `==`/`!=` comparison. An `i32` value widens into `i64`
+where needed (`sext`); nothing else converts.
+
+## Run the compiler
+    python3 compiler.py input.txt output.ll      # compile
+    python3 compiler.py --ast input.txt           # print the AST, write nothing
+    python3 compiler.py --tokens input.txt         # print the token list, write nothing
+    lli output.ll                                  # quick run, no linking
+    opt -passes=mem2reg -S output.ll               # same IR, allocas promoted to registers (phi)
+    llc -filetype=obj -relocation-model=pic output.ll -o output.o
+    clang -fPIE output.o -o program && ./program
+
+`--ast` runs the semantic pass first, so a program that does not type-check
+is rejected in that mode too.
+
+## Language
+    i32 x{5}                # const declaration, initialiser mandatory
+    i64 mut y{10}            # mutable declaration
+    bool b{true}             # bool declaration, true/false only
+    y := x + 3                # assignment (mut only), same rules as an initialiser
+    i32 z{2 + 3 * 4}          # chains: * binds tighter than + and -
+    bool r{x == y}            # one comparison per expression, weaker than + - *
+    bool n{!b}                # ! negates a bool; applies to the factor right after it
+    exit y                    # exit y, exit 42, exit b or exit !b
+
+Control flow (a block is `{`, one or more lines, `}`, each on its own line):
+
+    if b                      # the condition is on the line of the if
+    {
+        y := y + 1
+    }
+    else                      # optional
+    {
+        y := y - 1
+    }
+
+    while i != 11             # same layout; the body returns to the condition
+    {
+        sum := sum + i
+        i := i + 1
+    }
+
+A block holds at least one line and may end with `exit` as its last line;
+nothing follows an `exit` inside the same block. Blocks nest, and an `if`
+or `while` is a statement, so it may stand inside another block. A program
+is a list of statements ending with an `exit`; nothing follows it. `{` and
+`}` are plain tokens: the lexer does not pair them, the parser does.
+
+## Type rules
+A decimal constant takes the narrowest type it fits (`i32`, else `i64`,
+else an error). `+ - *` take two integers and produce the wider type; a
+`bool` operand is an error. `==`/`!=` take two integers of any width or
+two `bool`s and produce `bool`; mixing `bool` with an integer is an
+error. `!` takes a `bool`. The condition of `if` and `while` must be
+`bool`. An `i32` may initialise or be assigned to an `i64` variable;
+nothing else narrows or crosses the integer/`bool` line.
+
+## Scopes
+Every block is a scope of its own. The semantic pass keeps a stack of
+frames: a block pushes an empty frame on entry and pops it on exit. A
+declaration goes into the top frame, and only the top frame is checked
+for a duplicate, so an inner block may declare a name again with any type
+(shadowing). A use is looked up from the top frame down and takes the
+first hit; a name that is in no frame (including one whose block has
+ended) is "used before its declaration". Every `Var` and `Assign` node
+gets `node.decl`, the declaration it resolved to, so the code generator
+never looks a name up.
+
+## Code generation
+Every `if` becomes `then`, `else` (when there is one) and `merge` basic
+blocks and one conditional branch on the `i1` the condition produced; a
+`while` becomes `while.cond`, `while.body` and `while.end` with a branch
+back to the condition. Each block ends with exactly one terminator. A
+block that ends in `exit` has its `ret` and gets no extra `br`. Every
+`alloca` goes into the entry block, whichever block the declaration is
+in, so `opt -passes=mem2reg` can promote the slots to registers and build
+the `phi` for a variable assigned in both arms of an `if`.
+
+## Run tests
+    python3 run_tests.py
+
+Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
+its `.expected`: compiles, runs the result through `lli` when compilation
+succeeds, and otherwise compares the compiler's stderr. Every `.ast`
+snapshot is compared with the output of `--ast` for the program next to
+it. Prints a PASS/FAIL line per test and a summary; exits non-zero if
+anything failed.
+
+Valid programs write output.ll and produce no stderr. Invalid programs
+print `compilation error: line L:C: ...` to stderr and exit non-zero,
+writing no output file.
+```
+
+Що змінилось порівняно з Practice 4:
+- у статусі й мові додано `!`, `if`/`else`, `while` і блоки;
+- у "Run the compiler" з'явилась `opt -passes=mem2reg` і примітка, що `--ast` тепер іде після семантики;
+- правила типів доповнено `!` і умовами `if`/`while`;
+- нові розділи "Scopes" і "Code generation";
+- у "Run tests" згадано `.ast`-снапшоти, які раніше в README не були описані.
+
+Не вказав ні назви тестів, ні їх кількості: цифри швидко застарівають.
+
+Після заміни:
+
+```bash
+git add README.md
+git commit -m "README: if/else, while, ! , scopes and basic blocks"
+```
+
+Далі `git push`, якщо ти ще не пушила коміт з тестами. Потім переходимо до `ai_usage.txt`: пришли `cat ~/repo/ai_usage.txt`.
+
+------------------------------------------------------------
+
+ПИТАННЯ:
+залогуй мої питання та всі твої відповіді у файл ai_usage.txt

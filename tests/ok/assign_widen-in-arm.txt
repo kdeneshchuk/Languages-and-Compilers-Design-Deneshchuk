@@ -1,0 +1,7 @@
+i64 mut w{0}
+i32 n{5}
+if n == 5
+{
+    w := n
+}
+exit w

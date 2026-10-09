@@ -1,0 +1,7 @@
+i32 mut x{1}
+if true
+{
+    i32 mut x{5}
+    x := 9
+}
+exit x

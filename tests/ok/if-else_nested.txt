@@ -1,0 +1,17 @@
+i32 mut a{1}
+if a == 1
+{
+    if a != 2
+    {
+        a := 10
+    }
+    else
+    {
+        a := 20
+    }
+}
+else
+{
+    a := 30
+}
+exit a

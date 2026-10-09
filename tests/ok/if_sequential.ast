@@ -1,0 +1,31 @@
+Program
+  Decl a i32 mut
+    Const 0
+  If
+    Bool true
+    Block
+      Assign a
+        BinOp +
+          Var a
+          Const 1
+  If
+    Bool false
+    Block
+      Assign a
+        BinOp +
+          Var a
+          Const 10
+    Block
+      Assign a
+        BinOp +
+          Var a
+          Const 100
+  If
+    Bool true
+    Block
+      Assign a
+        BinOp +
+          Var a
+          Const 1000
+  Exit
+    Var a

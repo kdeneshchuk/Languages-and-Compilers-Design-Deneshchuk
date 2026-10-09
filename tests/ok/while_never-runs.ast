@@ -1,0 +1,10 @@
+Program
+  Decl i i32 mut
+    Const 0
+  While
+    Bool false
+    Block
+      Assign i
+        Const 1
+  Exit
+    Var i

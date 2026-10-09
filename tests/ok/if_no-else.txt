@@ -1,0 +1,6 @@
+i32 mut s{1}
+if s == 1
+{
+    s := 7
+}
+exit s

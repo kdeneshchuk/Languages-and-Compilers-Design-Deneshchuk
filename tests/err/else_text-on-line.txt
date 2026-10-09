@@ -1,0 +1,9 @@
+if true
+{
+    exit 1
+}
+else x
+{
+    exit 2
+}
+exit 0

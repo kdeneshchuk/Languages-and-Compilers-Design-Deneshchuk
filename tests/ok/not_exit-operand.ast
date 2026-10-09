@@ -1,0 +1,6 @@
+Program
+  Decl c bool const
+    Bool false
+  Exit
+    Not
+      Var c

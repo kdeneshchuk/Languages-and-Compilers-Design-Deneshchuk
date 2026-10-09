@@ -1,0 +1,10 @@
+bool c{true}
+if c
+{
+    exit 1
+}
+else
+{
+    exit 2
+}
+exit 3

@@ -1,0 +1,14 @@
+Program
+  Decl w i64 mut
+    Const 0
+  Decl n i32 const
+    Const 5
+  If
+    BinOp ==
+      Var n
+      Const 5
+    Block
+      Assign w
+        Var n
+  Exit
+    Var w

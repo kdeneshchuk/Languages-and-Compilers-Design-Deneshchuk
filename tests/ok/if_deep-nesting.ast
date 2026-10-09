@@ -1,0 +1,19 @@
+Program
+  Decl a i32 mut
+    Const 0
+  If
+    Bool true
+    Block
+      If
+        Bool true
+        Block
+          If
+            Bool true
+            Block
+              Assign a
+                Const 7
+            Block
+              Assign a
+                Const 8
+  Exit
+    Var a

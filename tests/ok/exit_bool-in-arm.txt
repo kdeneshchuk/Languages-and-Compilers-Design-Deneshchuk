@@ -1,0 +1,6 @@
+bool f{false}
+if !f
+{
+    exit f
+}
+exit true

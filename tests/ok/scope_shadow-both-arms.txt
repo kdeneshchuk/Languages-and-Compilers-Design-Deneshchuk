@@ -1,0 +1,15 @@
+i32 mut x{1}
+if x == 1
+{
+    bool x{true}
+    if x
+    {
+        exit 11
+    }
+}
+else
+{
+    i64 x{22}
+    exit x
+}
+exit x

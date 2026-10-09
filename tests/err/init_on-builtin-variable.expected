@@ -1,0 +1,1 @@
+compilation error: line 16:7: '{}' can only initialise a field of a struct type

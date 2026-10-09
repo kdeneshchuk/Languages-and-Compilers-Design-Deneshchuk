@@ -1,10 +1,23 @@
-program   ::= { statement } exit
-statement ::= decl | assign
-decl      ::= type [ "mut" ] ident "{" expr "}"
-type      ::= "i32" | "i64" | "bool"
-assign    ::= ident ":=" expr
-exit      ::= "exit" factor
-expr      ::= arith [ ("==" | "!=") arith ]
-arith     ::= term { ("+" | "-") term }
+program   ::= { struct } { fn } { statement } exit
+struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+field_decl ::= type [ "mut" ] ident NL
+fn        ::= "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL fn_block
+param     ::= type ident
+fn_block  ::= "{" NL ( statement { statement } exit | exit ) "}" NL
+statement ::= decl NL | assign NL | if | while
+decl      ::= type [ "mut" ] ident "{" init { "," init } "}"
+init      ::= expr | "{" init { "," init } "}"
+type      ::= "i32" | "i64" | "bool" | ident
+assign    ::= ident { "." ident } ":=" expr
+if        ::= "if" expr NL block [ "else" NL block ]
+while     ::= "while" expr NL block
+block     ::= "{" NL ( statement { statement } [ exit ] | exit ) "}" NL
+exit      ::= "exit" factor NL
+expr      ::= arith [ ( "==" | "!=" ) arith ]
+arith     ::= term { ( "+" | "-" ) term }
 term      ::= factor { "*" factor }
-factor    ::= number | "true" | "false" | ident
+factor    ::= number | "true" | "false" | ident | field | call | "!" factor
+field     ::= ident "." ident { "." ident }
+call      ::= ident "(" [ expr { "," expr } ] ")"
+ident     ::= ( letter | "_" ) { letter | digit | "_" }
+number    ::= digit { digit }

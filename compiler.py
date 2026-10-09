@@ -153,13 +153,14 @@ class DeclNode(StmtNode):
 
 
 class AssignNode(StmtNode):
-    def __init__(self, line, col, name, value):
+    def __init__(self, line, col, name, fields, value):
         super().__init__(line, col)
         self.name = name
+        self.fields = fields
         self.value = value
 
     def label(self):
-        return f"Assign {self.name}"
+        return "Assign " + ".".join([self.name] + [f[0] for f in self.fields])
 
     def children(self):
         return [self.value]
@@ -316,6 +317,18 @@ class CallNode(ExprNode):
     def accept(self, visitor):
         return visitor.visit_call(self)
 
+class MemberNode(ExprNode):
+    def __init__(self, line, col, name, fields):
+        super().__init__(line, col)
+        self.name = name
+        self.fields = fields
+
+    def label(self):
+        return "Member " + ".".join([self.name] + [f[0] for f in self.fields])
+
+    def accept(self, visitor):
+        return visitor.visit_member(self)
+
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
@@ -331,6 +344,21 @@ class SemanticChecker:
             if name in frame:
                 return frame[name]
         raise CompileError(f"line {node.line}:{node.col}: variable '{name}' is used before its declaration")
+
+    def resolve_chain(self, node):
+        decl = self.lookup(node, node.name)
+        t = decl.type_name
+        links, path = [], []
+        for fname, line, col in node.fields:
+            if t not in self.structs:
+                raise CompileError(f"line {line}:{col}: cannot access field '{fname}' of a value of type {t}")
+            field = next((f for f in self.structs[t].fields if f.name == fname), None)
+            if field is None:
+                raise CompileError(f"line {line}:{col}: struct '{t}' has no field '{fname}'")
+            links.append(field)
+            path.append(field.index)
+            t = field.type_name
+        return decl, links, path, t
 
     def visit_program(self, node):
         for struct in node.structs:
@@ -438,16 +466,20 @@ class SemanticChecker:
         return None
 
     def visit_assign(self, node):
-        decl = self.lookup(node, node.name)
+        decl, links, path, target = self.resolve_chain(node)
         if not decl.mutable:
             raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': it is not mut")
+        for (fname, line, col), field in zip(node.fields, links):
+            if not field.mutable:
+                raise CompileError(f"line {line}:{col}: cannot assign to field '{fname}': it is not mut")
         node.value.accept(self)
-        self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
-        if decl.type_name in self.structs:
-            path = self.const_field(decl.type_name)
-            if path is not None:
-                raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': field '{path}' is not mut")
-        node.decl = decl
+        full = ".".join([node.name] + [f[0] for f in node.fields])
+        self.check_assignable(node.value, target, node, f"assign to '{full}'")
+        if target in self.structs:
+            const_path = self.const_field(target)
+            if const_path is not None:
+                raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{full}': field '{const_path}' is not mut")
+        node.decl, node.path, node.target = decl, path, target
 
     def visit_exit(self, node):
         node.value.accept(self)
@@ -479,6 +511,10 @@ class SemanticChecker:
     def visit_var(self, node):
         node.decl = self.lookup(node, node.name)
         node.type = node.decl.type_name
+        return node.type
+
+    def visit_member(self, node):
+        node.decl, _, node.path, node.type = self.resolve_chain(node)
         return node.type
 
     def visit_const(self, node):
@@ -564,6 +600,15 @@ class CodeGen:
         self.builder.position_at_end(saved)
         return ptr
 
+    def address_of(self, ptr, path, label):
+        for index in path:
+            ptr = self.builder.gep(
+                ptr,
+                [ir.Constant(I32, 0), ir.Constant(I32, index)],
+                inbounds=True,
+                name=f"{label}.ptr")
+        return ptr
+
     def generate(self, tree):
         tree.accept(self)
 
@@ -630,8 +675,9 @@ class CodeGen:
 
     def visit_assign(self, node):
         value = node.value.accept(self)
-        value = coerce(self.builder, value, node.value.type, node.decl.type_name)
-        self.builder.store(value, node.decl.ptr)
+        value = coerce(self.builder, value, node.value.type, node.target)
+        ptr = self.address_of(node.decl.ptr, node.path, node.name)
+        self.builder.store(value, ptr)
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -678,6 +724,10 @@ class CodeGen:
 
     def visit_var(self, node):
         return self.builder.load(node.decl.ptr)
+
+    def visit_member(self, node):
+        ptr = self.address_of(node.decl.ptr, node.path, node.name)
+        return self.builder.load(ptr)
 
     def visit_const(self, node):
         return ir.Constant(LLVM_TYPES[node.type], int(node.value))
@@ -763,6 +813,8 @@ def lex(data: bytes):
                 tokens.append(Token("rbrace", "}", line, col))
             elif b == ord(","):
                 tokens.append(Token("comma", ",", line, col))
+            elif b == ord("."):
+                tokens.append(Token("dot", ".", line, col))
             elif b == ord("("):
                 tokens.append(Token("lparen", "(", line, col))
             elif b == ord(")"):
@@ -876,6 +928,14 @@ class Parser:
         self.pos += 1
         return tok
 
+    def parse_fields(self):
+        fields = []
+        while (tok := self.peek()) is not None and tok.kind == "dot":
+            self.eat()
+            field_tok = self.expect("ident", "a field name")
+            fields.append((field_tok.text, field_tok.line, field_tok.col))
+        return fields
+
     def parse_call(self, name_tok):
         self.eat()
         args = []
@@ -905,6 +965,9 @@ class Parser:
             nxt = self.peek()
             if nxt is not None and nxt.kind == "lparen":
                 return self.parse_call(tok)
+            fields = self.parse_fields()
+            if fields:
+                return MemberNode(tok.line, tok.col, tok.text, fields)
             return VarNode(tok.line, tok.col, tok.text)
 
         if tok.kind == "operator" and tok.text == "!":
@@ -1051,14 +1114,16 @@ class Parser:
 
     def parse_assign(self):
         name_tok = self.eat()
+        fields = self.parse_fields()
+        full = ".".join([name_tok.text] + [f[0] for f in fields])
         tok = self.peek()
         if tok is None:
-            self.error(f"expected ':=' after '{name_tok.text}', found end of line")
+            self.error(f"expected ':=' after '{full}', found end of line")
         if not (tok.kind == "operator" and tok.text == ":="):
-            self.error(f"expected ':=' after '{name_tok.text}', got '{tok.text}'")
+            self.error(f"expected ':=' after '{full}', got '{tok.text}'")
         self.eat()
         value = self.parse_expr()
-        return AssignNode(name_tok.line, name_tok.col, name_tok.text, value)
+        return AssignNode(name_tok.line, name_tok.col, name_tok.text, fields, value)
 
     def parse_exit(self):
         exit_tok = self.eat()

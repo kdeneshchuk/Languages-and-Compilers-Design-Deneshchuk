@@ -1,0 +1,27 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i32 mut radius
+}
+fn isXZero := (Point p) -> bool
+{
+    bool zero{p.x == 0}
+    exit zero
+}
+Point mut p{3, 0}
+i32 mut n{0}
+while !isXZero(p)
+{
+    p.x := p.x - 1
+    n := n + 1
+}
+if isXZero(p)
+{
+    exit n
+}
+exit 0

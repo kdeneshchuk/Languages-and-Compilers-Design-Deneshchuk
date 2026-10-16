@@ -1,0 +1,6 @@
+fn sub := (i32 a, i32 b) -> i32
+{
+    i32 r{a - b}
+    exit r
+}
+exit sub(read(), read())

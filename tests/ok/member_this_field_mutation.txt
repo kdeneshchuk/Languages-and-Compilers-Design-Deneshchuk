@@ -1,0 +1,31 @@
+struct Point
+{
+    i32 mut x
+    fn get := () -> i32
+    {
+        exit x
+    }
+    fn shift := (i32 dx) -> i32
+    {
+        x := x + dx
+        exit x
+    }
+}
+struct Ring
+{
+    Point mut center
+    i32 radius
+    fn grow := (i32 d) -> i32
+    {
+        i32 a{center.shift(d)}
+        i32 b{center.get()}
+        i32 r{a * 10 + b}
+        exit r
+    }
+}
+Point p{1}
+Ring mut q{p, 7}
+i32 v{q.grow(4)}
+i32 w{q.center.x}
+i32 res{v * 100 + w}
+exit res

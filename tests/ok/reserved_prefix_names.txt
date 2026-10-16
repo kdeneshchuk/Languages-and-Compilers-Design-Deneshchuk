@@ -1,0 +1,6 @@
+i32 printer{read()}
+i32 reader{printer + 1}
+i32 read_count{reader * 2}
+i32 print2{read_count + 1}
+print(print2)
+exit print2

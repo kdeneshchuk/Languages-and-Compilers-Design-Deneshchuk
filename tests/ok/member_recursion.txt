@@ -1,0 +1,15 @@
+struct Acc
+{
+    i32 base
+    fn fact := (i32 n) -> i32
+    {
+        if n == 0
+        {
+            exit 1
+        }
+        i32 r{n * fact(n - 1)}
+        exit r
+    }
+}
+Acc a{0}
+exit a.fact(5)

@@ -1,0 +1,9 @@
+i32 neg{0 - 9}
+i64 big{3000000000}
+print(neg)
+print(0 - big)
+print(2147483647)
+print(2147483648)
+print(!true)
+print(neg != 0 - 9)
+exit 0

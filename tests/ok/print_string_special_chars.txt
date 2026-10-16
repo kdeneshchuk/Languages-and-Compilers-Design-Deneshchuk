@@ -1,0 +1,3 @@
+print("a\tb %d %s 100%")
+print("{} [] ' ; := ->")
+exit 0

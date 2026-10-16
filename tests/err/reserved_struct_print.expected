@@ -1,0 +1,1 @@
+compilation error: line 1:8: 'print' is a built-in name and cannot be used as a struct name

@@ -1,0 +1,21 @@
+struct A
+{
+    i32 v
+    fn get := () -> i32
+    {
+        exit v
+    }
+}
+struct B
+{
+    i32 v
+    fn get := () -> i32
+    {
+        i32 r{v * 2}
+        exit r
+    }
+}
+A a{5}
+B b{5}
+i32 res{a.get() * 10 + b.get()}
+exit res

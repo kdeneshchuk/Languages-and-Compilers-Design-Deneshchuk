@@ -1,0 +1,6 @@
+fn f := () -> i32
+{
+    i32 read{1}
+    exit 1
+}
+exit 0

@@ -1,0 +1,1 @@
+compilation error: line 4:8: member function 'x' has the name of a field of 'Point'

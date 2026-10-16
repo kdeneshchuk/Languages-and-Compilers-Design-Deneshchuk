@@ -1,0 +1,1 @@
+compilation error: line 12:13: cannot call 'shift' on 'p': it is not mut

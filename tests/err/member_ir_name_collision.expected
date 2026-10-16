@@ -1,0 +1,1 @@
+compilation error: line 12:8: member function 'A.B_c' would be 'A_B_c' in the IR, and that name is taken

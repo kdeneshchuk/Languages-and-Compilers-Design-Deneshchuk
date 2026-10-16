@@ -1,0 +1,17 @@
+struct Point
+{
+    i32 mut x
+    fn bump := () -> i32
+    {
+        x := x + 1
+        exit x
+    }
+    fn peek := () -> i32
+    {
+        i32 r{bump()}
+        exit r
+    }
+}
+Point q{1}
+i32 a{q.peek()}
+exit 0

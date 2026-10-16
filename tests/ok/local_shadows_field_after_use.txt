@@ -1,0 +1,13 @@
+struct Point
+{
+    i32 x
+    fn f := () -> i32
+    {
+        i32 a{x}
+        i32 x{a + 100}
+        i32 r{x + a}
+        exit r
+    }
+}
+Point p{5}
+exit p.f()

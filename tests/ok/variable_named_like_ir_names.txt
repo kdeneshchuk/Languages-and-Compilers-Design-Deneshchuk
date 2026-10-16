@@ -1,0 +1,9 @@
+i32 entry{1}
+i32 then{2}
+i32 merge{3}
+i32 fmt{4}
+i32 printf{5}
+i32 scanf{6}
+i32 main{7}
+i32 sum{entry + then + merge + fmt + printf + scanf + main}
+exit sum

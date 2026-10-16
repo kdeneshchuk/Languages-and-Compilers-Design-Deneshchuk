@@ -1,0 +1,31 @@
+struct Acc
+{
+    i32 mut n
+    fn add := (i32 d) -> i32
+    {
+        n := n + d
+        print(n)
+        exit n
+    }
+}
+fn show := (i32 k) -> i32
+{
+    if k == 1
+    {
+        print("one")
+    }
+    else
+    {
+        print(k)
+    }
+    exit k
+}
+Acc mut a{0}
+i32 mut i{0}
+while i != 3
+{
+    i32 t{a.add(i)}
+    i32 u{show(i)}
+    i := i + 1
+}
+exit a.n

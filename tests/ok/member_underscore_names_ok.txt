@@ -1,0 +1,20 @@
+struct A_B
+{
+    i32 x
+    fn c := () -> i32
+    {
+        exit 1
+    }
+}
+struct A
+{
+    i32 x
+    fn B_d := () -> i32
+    {
+        exit 2
+    }
+}
+A_B p{0}
+A q{0}
+i32 r{p.c() * 10 + q.B_d()}
+exit r

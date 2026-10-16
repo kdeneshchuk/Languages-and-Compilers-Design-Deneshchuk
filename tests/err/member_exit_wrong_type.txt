@@ -1,0 +1,10 @@
+struct Point
+{
+    i32 x
+    fn f := () -> i32
+    {
+        bool b{true}
+        exit b
+    }
+}
+exit 0

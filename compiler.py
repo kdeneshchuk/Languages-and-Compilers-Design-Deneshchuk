@@ -20,6 +20,7 @@ KEYWORDS = {
     "if": "keyword", "else": "keyword", "while": "keyword",
     "struct": "keyword",
     "fn": "keyword",
+    "read": "keyword", "print": "keyword",
 }
 
 def is_alpha(b):
@@ -366,6 +367,40 @@ class MemberCallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_member_call(self)
+
+class ReadNode(ExprNode):
+    def label(self):
+        return "Read"
+
+    def accept(self, visitor):
+        return visitor.visit_read(self)
+
+
+class StringNode(ExprNode):
+    def __init__(self, line, col, text):
+        super().__init__(line, col)
+        self.text = text
+
+    def label(self):
+        return f'String "{self.text}"'
+
+    def accept(self, visitor):
+        return visitor.visit_string(self)
+
+
+class PrintNode(StmtNode):
+    def __init__(self, line, col, arg):
+        super().__init__(line, col)
+        self.arg = arg
+
+    def label(self):
+        return "Print"
+
+    def children(self):
+        return [self.arg]
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
 
 class ThisNode(Node):
     def __init__(self, line, col, struct_name):
@@ -733,6 +768,17 @@ class SemanticChecker:
         node.type = "bool"
         return node.type
 
+    def visit_read(self, node):
+        node.type = "i32"
+        return node.type
+
+    def visit_string(self, node):
+        return None
+
+    def visit_print(self, node):
+        if not isinstance(node.arg, StringNode):
+            node.arg.accept(self)
+
     def check_assignable(self, expr, want, at, what):
         have = expr.type
         if have == want or (have == "i32" and want == "i64"):
@@ -753,6 +799,8 @@ class CodeGen:
         self.fns = {}
         self.current_fn = None
         self.member_fns = {}
+        self.strings = {}
+        self.struct_nodes = {}
 
     def ir_type(self, name):
         if name in LLVM_TYPES:
@@ -780,6 +828,24 @@ class CodeGen:
                 name=f"{label}.ptr")
         return ptr
 
+    def str_ptr(self, text):
+        gv = self.strings.get(text)
+        if gv is None:
+            data = text.encode("latin-1") + b"\0"
+            ty = ir.ArrayType(I8, len(data))
+            gv = ir.GlobalVariable(self.module, ty, name=f"str.{len(self.strings)}")
+            gv.linkage, gv.global_constant = "private", True
+            gv.initializer = ir.Constant(ty, bytearray(data))
+            self.strings[text] = gv
+        return self.builder.bitcast(gv, ir.PointerType(I8))
+
+    def scanf_fn(self):
+        try:
+            return self.module.get_global("scanf")
+        except KeyError:
+            ty = ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True)
+            return ir.Function(self.module, ty, name="scanf")
+
     def generate(self, tree):
         tree.accept(self)
 
@@ -801,6 +867,7 @@ class CodeGen:
         st = self.module.context.get_identified_type(node.name)
         st.set_body(*[self.ir_type(f.type_name) for f in node.fields])
         self.struct_types[node.name] = st
+        self.struct_nodes[node.name] = node
 
     def declare_functions(self, functions):
         for fn in functions:
@@ -939,6 +1006,54 @@ class CodeGen:
         fn = self.member_fns[(node.fn.owner, node.fn.name)]
         return self.builder.call(fn, [obj] + args, name=f"{node.name}.ret")
 
+    def printf_call(self, fmt, *args):
+        printf = self.module.get_global("printf")
+        self.builder.call(printf, [self.str_ptr(fmt)] + list(args))
+
+    def visit_print(self, node):
+        arg = node.arg
+        if isinstance(arg, StringNode):
+            self.printf_call("%s\n", self.str_ptr(arg.text))
+            return
+        t = arg.type
+        if t in self.struct_nodes:
+            self.print_struct(self.struct_ptr(arg), t, True)
+            return
+        value = arg.accept(self)
+        if t == "bool":
+            chosen = self.builder.select(value, self.str_ptr("true"), self.str_ptr("false"))
+            self.printf_call("%s\n", chosen)
+        elif t == "i64":
+            self.printf_call("%lld\n", value)
+        elif t == "i32":
+            self.printf_call("%d\n", value)
+
+    def struct_ptr(self, arg):
+        if isinstance(arg, (VarNode, MemberNode)):
+            return self.address_of(arg.decl.ptr, arg.path, arg.name)
+        value = arg.accept(self)
+        slot = self.new_slot(self.ir_type(arg.type), "print.tmp")
+        self.builder.store(value, slot)
+        return slot
+
+    def print_struct(self, ptr, type_name, newline):
+        self.printf_call(f"{type_name}{{")
+        for i, field in enumerate(self.struct_nodes[type_name].fields):
+            label = ("" if i == 0 else ", ") + f"{field.name}: "
+            field_ptr = self.address_of(ptr, [field.index], f"{type_name}.{field.name}")
+            if field.type_name in self.struct_nodes:
+                self.printf_call(label)
+                self.print_struct(field_ptr, field.type_name, False)
+            elif field.type_name == "bool":
+                value = self.builder.load(field_ptr)
+                chosen = self.builder.select(value, self.str_ptr("true"), self.str_ptr("false"))
+                self.printf_call(label + "%s", chosen)
+            elif field.type_name == "i64":
+                self.printf_call(label + "%lld", self.builder.load(field_ptr))
+            else:
+                self.printf_call(label + "%d", self.builder.load(field_ptr))
+        self.printf_call("}\n" if newline else "}")
+
     def visit_init(self, node):
         values = [e.accept(self) for e in node.items]
         if node.copy:
@@ -952,6 +1067,11 @@ class CodeGen:
 
     def visit_const(self, node):
         return ir.Constant(LLVM_TYPES[node.type], int(node.value))
+
+    def visit_read(self, node):
+        slot = self.new_slot(I32, "read")
+        self.builder.call(self.scanf_fn(), [self.str_ptr("%d"), slot])
+        return self.builder.load(slot, name="read.val")
 
     def visit_bool(self, node):
         return ir.Constant(I1, int(node.value))
@@ -1052,6 +1172,8 @@ def lex(data: bytes):
                 state, start_line, start_col = "EQ", line, col
             elif b == ord("!"):
                 state, start_line, start_col = "BANG", line, col
+            elif b == ord('"'):
+                state, start, start_line, start_col = "STRING", i, line, col
             else:
                 raise CompileError(f"line {line}:{col}: unexpected byte {chr(b)!r}")
 
@@ -1107,6 +1229,13 @@ def lex(data: bytes):
                 tokens.append(Token("operator", "-", start_line, start_col))
                 state = "START"
                 continue
+
+        elif state == "STRING":
+            if b is None or b == 10:
+                raise CompileError(f"line {start_line}:{start_col}: string literal is not closed")
+            elif b == ord('"'):
+                tokens.append(Token("string", data[start + 1:i].decode("latin-1"), start_line, start_col))
+                state = "START"
 
         i += 1
         col += 1
@@ -1203,6 +1332,21 @@ class Parser:
             self.eat()
             return BoolNode(tok.line, tok.col, tok.text == "true")
 
+        if tok.kind == "string":
+            self.error("a string literal can only be the argument of 'print'")
+
+        if tok.kind == "keyword" and tok.text == "print":
+            self.error("'print' is a statement and has no value")
+
+        if tok.kind == "keyword" and tok.text == "read":
+            self.eat()
+            self.expect("lparen", "'(' after 'read'")
+            nxt = self.peek()
+            if nxt is not None and nxt.kind != "rparen":
+                self.error("'read' takes no arguments")
+            self.expect("rparen", "')'")
+            return ReadNode(tok.line, tok.col)
+
         if tok.kind == "ident":
             self.eat()
             nxt = self.peek()
@@ -1249,6 +1393,8 @@ class Parser:
         if tok is None:
             self.error(f"expected {what}, found end of line")
         if tok.kind != kind:
+            if kind == "ident" and tok.kind == "keyword" and tok.text in ("read", "print"):
+                self.error(f"'{tok.text}' is a built-in name and cannot be used as {what}")
             self.error(f"expected {what}, got '{tok.text}'")
         return self.eat()
 
@@ -1390,6 +1536,23 @@ class Parser:
         value = self.parse_factor()
         return ExitNode(exit_tok.line, exit_tok.col, value)
 
+    def parse_print(self):
+        print_tok = self.eat()
+        self.expect("lparen", "'(' after 'print'")
+        tok = self.peek()
+        if tok is not None and tok.kind == "rparen":
+            self.error("'print' needs an argument", at=print_tok)
+        if tok is not None and tok.kind == "string":
+            self.eat()
+            arg = StringNode(tok.line, tok.col, tok.text)
+        else:
+            arg = self.parse_expr()
+        nxt = self.peek()
+        if nxt is not None and nxt.kind == "comma":
+            self.error("'print' takes one argument", at=nxt)
+        self.expect("rparen", "')'")
+        return PrintNode(print_tok.line, print_tok.col, arg)
+
     def parse_block(self, after):
         toks = self.next_line()
         if toks is None:
@@ -1450,13 +1613,17 @@ class Parser:
             return self.parse_if()
         if tok.kind == "keyword" and tok.text == "while":
             return self.parse_while()
+        if tok.kind == "keyword" and tok.text == "print":
+            return self.parse_print()
         if tok.kind == "keyword" and tok.text == "else":
             self.error("'else' without an 'if'")
         if tok.kind == "ident":
             nxt = self.toks[self.pos + 1] if self.pos + 1 < len(self.toks) else None
-            if nxt is not None and (nxt.kind == "ident" or (nxt.kind == "keyword" and nxt.text == "mut")):
+            if nxt is not None and (nxt.kind == "ident" or (nxt.kind == "keyword" and nxt.text in ("mut", "read", "print"))):
                 return self.parse_decl()
             return self.parse_assign()
+        if tok.kind == "string":
+            self.error("a string literal can only be the argument of 'print'")
         self.error(f"cannot start a statement with '{tok.text}'")
 
     def parse_program(self):

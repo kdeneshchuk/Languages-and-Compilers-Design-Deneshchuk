@@ -1,0 +1,2 @@
+p.moved(1).x := 5
+exit 0

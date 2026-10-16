@@ -368,6 +368,21 @@ class MemberCallNode(ExprNode):
     def accept(self, visitor):
         return visitor.visit_member_call(self)
 
+class ResultFieldNode(ExprNode):
+    def __init__(self, line, col, target, fields):
+        super().__init__(line, col)
+        self.target = target
+        self.fields = fields
+
+    def label(self):
+        return "ResultField " + ".".join(f[0] for f in self.fields)
+
+    def children(self):
+        return [self.target]
+
+    def accept(self, visitor):
+        return visitor.visit_result_field(self)
+
 class ReadNode(ExprNode):
     def label(self):
         return "Read"
@@ -676,10 +691,18 @@ class SemanticChecker:
         node.decl, node.links, node.path, node.type = self.resolve_chain(node)
         return node.type
 
+    def visit_result_field(self, node):
+        t = node.target.accept(self)
+        if t not in self.structs:
+            raise CompileError(f"line {node.line}:{node.col}: cannot access a field of a value of type {t}")
+        node.links, node.path, node.type = self.walk_fields(t, node.fields)
+        return node.type
+
     def visit_member_call(self, node):
         t = node.target.accept(self)
         if t not in self.structs:
-            raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on a value of type {t}: "
+            line, col = getattr(node, "dot", (node.line, node.col))
+            raise CompileError(f"line {line}:{col}: cannot call '{node.name}' on a value of type {t}: "
                                f"it has no member functions")
         fn = self.methods[t].get(node.name)
         if fn is None:
@@ -692,6 +715,9 @@ class SemanticChecker:
             self.check_assignable(arg, param.type_name, arg, f"pass argument {i} of '{node.name}'")
         node.fn = fn
         node.type = fn.ret_type
+        node.temp = isinstance(node.target, (CallNode, MemberCallNode, ResultFieldNode))
+        if node.temp:
+            return node.type
         decl = node.target.decl
         if isinstance(decl, ThisNode):
             self.current_fn.this_calls.append(fn)
@@ -1005,9 +1031,18 @@ class CodeGen:
         ptr = self.address_of(node.decl.ptr, node.path, node.name)
         return self.builder.load(ptr)
 
+    def visit_result_field(self, node):
+        value = node.target.accept(self)
+        for index in node.path:
+            value = self.builder.extract_value(value, index, name="res.field")
+        return value
+
     def visit_member_call(self, node):
         target = node.target
-        obj = self.address_of(target.decl.ptr, target.path, target.name)
+        if node.temp:
+            obj = self.struct_ptr(target, "chain.tmp")
+        else:
+            obj = self.address_of(target.decl.ptr, target.path, target.name)
         args = [coerce(self.builder, a.accept(self), a.type, p.type_name)
                 for a, p in zip(node.args, node.fn.params)]
         fn = self.member_fns[(node.fn.owner, node.fn.name)]
@@ -1035,11 +1070,11 @@ class CodeGen:
         elif t == "i32":
             self.printf_call("%d\n", value)
 
-    def struct_ptr(self, arg):
+    def struct_ptr(self, arg, label="print.tmp"):
         if isinstance(arg, (VarNode, MemberNode)):
             return self.address_of(arg.decl.ptr, arg.path, arg.name)
         value = arg.accept(self)
-        slot = self.new_slot(self.ir_type(arg.type), "print.tmp")
+        slot = self.new_slot(self.ir_type(arg.type), label)
         self.builder.store(value, slot)
         return slot
 
@@ -1312,6 +1347,28 @@ class Parser:
             return MemberNode(name_tok.line, name_tok.col, name_tok.text, fields)
         return VarNode(name_tok.line, name_tok.col, name_tok.text)
 
+    def parse_postfix(self, node):
+        fields, first_dot = [], None
+        while (tok := self.peek()) is not None and tok.kind == "dot":
+            dot = self.eat()
+            if first_dot is None:
+                first_dot = dot
+            name_tok = self.expect("ident", "a field name")
+            nxt = self.peek()
+            if nxt is not None and nxt.kind == "lparen":
+                target = node
+                if fields:
+                    target = ResultFieldNode(first_dot.line, first_dot.col, node, fields)
+                args = self.parse_args()
+                node = MemberCallNode(name_tok.line, name_tok.col, target, name_tok.text, args)
+                node.dot = (dot.line, dot.col)
+                fields, first_dot = [], None
+            else:
+                fields.append((name_tok.text, name_tok.line, name_tok.col))
+        if fields:
+            return ResultFieldNode(first_dot.line, first_dot.col, node, fields)
+        return node
+
     def parse_args(self):
         self.eat()
         args = []
@@ -1359,8 +1416,11 @@ class Parser:
             self.eat()
             nxt = self.peek()
             if nxt is not None and nxt.kind == "lparen":
-                return self.parse_call(tok)
-            return self.parse_chain(tok)
+                return self.parse_postfix(self.parse_call(tok))
+            node = self.parse_chain(tok)
+            if isinstance(node, MemberCallNode):
+                return self.parse_postfix(node)
+            return node
 
         if tok.kind == "operator" and tok.text == "!":
             self.eat()

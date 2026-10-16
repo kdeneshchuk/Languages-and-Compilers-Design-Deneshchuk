@@ -4,11 +4,12 @@
 A compiler for a small language with `i32`/`i64`/`bool` variable
 declarations (const by default, `mut` for mutable), assignments, `exit`,
 comparisons, `!`, `if`/`else` and `while` with blocks, structs with
-field access, and functions with calls. Source is tokenized by a
-hand-written lexer, parsed by a hand-written recursive-descent parser
-into an AST, checked by a `SemanticChecker` visitor that resolves names,
-scopes, fields and types before any LLVM instruction exists, and
-compiled to LLVM IR via llvmlite by a walk over that tree. The
+field access and member functions, functions with calls, and the
+built-ins `read()` and `print`. Source is tokenized by a hand-written
+lexer, parsed by a hand-written recursive-descent parser into an AST,
+checked by a `SemanticChecker` visitor that resolves names, scopes,
+fields, member functions and types before any LLVM instruction exists,
+and compiled to LLVM IR via llvmlite by a walk over that tree. The
 initialiser and the right side of `:=` accept a chain of `+`, `-`, `*`
 with real precedence and left associativity, optionally followed by one
 `==`/`!=` comparison. An `i32` value widens into `i64` where needed
@@ -19,6 +20,7 @@ with real precedence and left associativity, optionally followed by one
     python3 compiler.py --ast input.txt           # print the AST, write nothing
     python3 compiler.py --tokens input.txt         # print the token list, write nothing
     lli output.ll                                  # quick run, no linking
+    lli output.ll < input.in                       # a program that calls read()
     opt -passes=mem2reg -S output.ll               # same IR, allocas promoted to registers (phi)
     llc -filetype=obj -relocation-model=pic output.ll -o output.o
     clang -fPIE output.o -o program && ./program
@@ -88,6 +90,92 @@ Every link of a chain must exist. A write through `a.b.c` needs `a`, `b`
 and `c` to be `mut`. `:=` replaces a whole object only if all its fields,
 at every depth, are `mut`.
 
+## Member functions
+    struct Point
+    {
+        i32 mut x
+        i32 mut y
+
+        fn d2 := () -> i32
+        {
+            i32 r{x * x + y * y}
+            exit r
+        }
+        fn shift := (i32 dx) -> i32
+        {
+            x := x + dx
+            exit x
+        }
+    }
+    Point mut p{3, 4}
+    i32 d{p.d2()}             # 25
+    i32 n{p.shift(2)}         # p.x becomes 5, n is 5
+    i32 k{c.center.d2()}      # the object can be a field chain
+
+Member functions come after the fields of a struct, never before the
+first field and never between fields. A field and a member function of
+one struct cannot share a name, nor can two member functions. A member
+function is declared like any other function and is called on an object
+with `.`; it stands wherever a factor can, also after `exit`. A call ends
+a chain: nothing follows its `)` (except the additional task below), and
+a call alone is not a statement. A member function is called on an
+object, never on a type: `Point.d2()` is an error.
+
+**Names inside a member function.** A name is looked up among the
+parameters and local variables first, then among the fields of the
+structure, so a parameter or a local named like a field hides the field.
+A call `f(...)` looks among the member functions of the same structure
+first, then among the global functions: a member function hides a global
+function with the same name, and `d2()` inside `Point` calls `d2` on the
+same object. As in any function, the body does not see the top-level
+variables. A field without `mut` cannot be assigned, also inside a
+member function.
+
+**The mutation rule.** A member function is mutating if it assigns to a
+field of its object, or calls a mutating member function on its object or
+on one of its fields. A mutating function may be called only through a
+chain where every link is `mut`: the object and each field on the way. A
+non-mutating one may be called on anything. A local variable named like a
+field does not make a function mutating. Member functions may call each
+other in a cycle, so the checker marks the ones that assign a field, then
+repeats until no new function gets marked, and only then checks the calls.
+
+**A call in the middle of a chain (additional task).** A `.` is allowed
+after a call whose result is a struct, to read a field of the result or
+to call a member function on it:
+
+    i32 a{p.moved(1).shift(2)}        # shift changes the copy, p.x stays 3
+    i32 d{c.grown(1).center.d2()}
+    i32 e{origin().moved(7).x}
+
+The result is a temporary copy: it can be read and any member function
+can be called on it, also a mutating one, but nothing can be assigned to
+it (`p.moved(1).x := 5` is an error). A `.` after a call whose result is
+not a struct (`p.d2().x`) is an error at that `.`.
+
+## read() and print
+    i32 a{read()}             # reads one integer from stdin, the result is i32
+    print("text")             # a string literal, printed as written
+    print(a + 1)              # i32 / i64: the number
+    print(a == 3)             # bool: the word true or false
+    print(p)                  # a struct: Point{x: 3, y: 4}
+    print(c)                  # Circle{center: Point{x: 3, y: 4}, radius: 2}
+
+`read()` stands wherever a factor can (`i32 a{read()}`, `add(read(), 2)`,
+`exit read()`). `print(arg)` is a statement: it prints the argument and a
+newline, and stands wherever a statement can (top level, functions,
+member functions, `if`, `else`, `while`). It has no value, so
+`i32 x{print(1)}` is an error. The argument is an `i32`/`i64` value, a
+`bool`, a string literal, or a struct object (a variable, a field chain
+or a call that returns a struct); a struct field is printed the same way,
+one level down. A string literal is `"`, any bytes except `"` and a
+newline, then `"`; there are no escape sequences (`\n` is two characters)
+and a literal stands only as the argument of `print`. The names `read`
+and `print` are reserved: a variable, function, parameter, field or
+member function with that name is an error, and so are `read(5)`,
+`print()`, `print(a, b)` and `p.print()`. The output of `print` comes
+before `Program exit with result N`.
+
 ## Functions
     fn moved := (Point p, i32 dx) -> Point
     {
@@ -117,9 +205,9 @@ a struct.
 Structs come first, then functions, then statements, then the final
 `exit`; nothing follows it. A struct after a function or a statement, or
 a function after a statement, is an error at that line. `exit` takes one
-operand (a constant, a variable, a field chain, a call or `!` with a
-factor), never an operation; at the top level the operand has a built-in
-type.
+operand (a constant, a variable, a field chain, a call, `read()` or `!`
+with a factor), never an operation; at the top level the operand has a
+built-in type.
 
 ## Type rules
 A decimal constant takes the narrowest type it fits (`i32`, else `i64`,
@@ -139,10 +227,11 @@ for a duplicate, so an inner block may declare a name again with any type
 (shadowing). A use is looked up from the top frame down and takes the
 first hit; a name that is in no frame (including one whose block has
 ended) is "used before its declaration". A function body starts from a
-fresh stack whose bottom frame holds only its parameters. Every `Var`,
-`Member` and `Assign` node gets `node.decl`, the declaration it resolved
-to, and a chain also gets the list of field indices, so the code
-generator never looks up a name or a field.
+fresh stack whose bottom frame holds only its parameters; a member
+function body also falls back to the fields of its structure after the
+frames. Every `Var`, `Member` and `Assign` node gets `node.decl`, the
+declaration it resolved to, and a chain also gets the list of field
+indices, so the code generator never looks up a name or a field.
 
 ## Code generation
 Every `if` becomes `then`, `else` (when there is one) and `merge` basic
@@ -158,8 +247,8 @@ registers and build the `phi` for a variable assigned in both arms of an
 A struct is a named type, `%"Point" = type {i32, i32}`; an object is an
 `alloca` of that type, and a field is reached with `getelementptr` by the
 index the semantic pass found, one `gep` per link of a chain. Objects are
-passed to and returned from functions by value. A nested `{}` is one
-value of the struct type, built from `undef` field by field with
+passed to and returned from ordinary functions by value. A nested `{}` is
+one value of the struct type, built from `undef` field by field with
 `insertvalue` and stored with one `store`.
 
 Each function of the program becomes a function of the module named
@@ -170,15 +259,44 @@ Parameters are stored into slots in the function's own entry block;
 top-level `exit` prints `Program exit with result ...` and returns 0
 from `main`.
 
+**Member functions.** A member function is a function of the module named
+after the structure and the function, `Point_shift`. Its first parameter
+is `%"Point"* %this`, a pointer to the object it is called on; the
+language has no name for it. A call passes the address of the object: its
+`alloca`, or a `gep` into it for `c.center.d2()`. A field inside the body
+is a `gep` on `this`, so `x := x + dx` is a gep, a load, an add and a
+store. Because the object is passed by address, `shift` changes the
+caller's object, not a copy. If the generated name `Struct_method` would
+collide with another one (`A_B` + `c` against `A` + `B_c`), the checker
+reports an error. For a call in the middle of a chain a field of the
+result is an `extractvalue`, and for a member function call on a result
+the result is stored into a temporary `alloca` (`chain.tmp`) whose
+address is passed as `this`.
+
+**read and print.** `printf` and `scanf` are declared once in the module.
+`read()` stores 0 into an `alloca` in the entry block, calls `scanf` with
+the global constant `"%d"` and loads the slot, so an empty input gives 0.
+`print` uses global constants for the formats and texts: `"%d\n"` for
+`i32`, `"%lld\n"` for `i64`, `"%s\n"` with a `select` between the globals
+`"true"` and `"false"` for `bool`, and `"%s\n"` for a literal, so a `%`
+in it stays a `%`. A struct is printed by walking its field table:
+`printf("Point{")`, then for every field a gep, a load and a `printf`
+with a format like `", y: %d"` (a struct field goes the same way one
+level down), then `printf("}")`. A call result is stored into an
+`alloca` first.
+
 ## Run tests
     python3 run_tests.py
 
 Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
 its `.expected`: compiles, runs the result through `lli` when compilation
-succeeds, and otherwise compares the compiler's stderr. Every `.ast`
-snapshot is compared with the output of `--ast` for the program next to
-it. Prints a PASS/FAIL line per test and a summary; exits non-zero if
-anything failed.
+succeeds, and otherwise compares the compiler's stderr. A program that
+reads input keeps it next to itself in `NAME.in`; the script passes this
+file as the standard input (an empty input when there is none). The whole
+standard output is compared: the lines of `print` and the exit line. Every
+`.ast` snapshot is compared with the output of `--ast` for the program
+next to it. Prints a PASS/FAIL line per test and a summary; exits non-zero
+if anything failed.
 
 Valid programs write output.ll and produce no stderr. Invalid programs
 print `compilation error: line L:C: ...` to stderr and exit non-zero,

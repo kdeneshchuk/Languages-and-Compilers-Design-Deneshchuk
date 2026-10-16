@@ -419,6 +419,7 @@ class SemanticChecker:
         self.current_struct = None
         self.flags_ready = False
         self.pending = []
+        self.ir_names = set()
 
     def check(self, tree):
         tree.accept(self)
@@ -494,6 +495,12 @@ class SemanticChecker:
             if fn.name in fn_names:
                 raise CompileError(f"line {fn.line}:{fn.col}: member function '{fn.name}' is already declared in '{node.name}'")
             fn_names.add(fn.name)
+        for fn in node.fns:
+            ir_name = f"{node.name}_{fn.name}"
+            if ir_name in self.ir_names:
+                raise CompileError(f"line {fn.line}:{fn.col}: member function '{node.name}.{fn.name}' "
+                                   f"would be '{ir_name}' in the IR, and that name is taken")
+            self.ir_names.add(ir_name)
         self.structs[node.name] = node
         self.methods[node.name] = {fn.name: fn for fn in node.fns}
         for fn in node.fns:
@@ -1070,6 +1077,7 @@ class CodeGen:
 
     def visit_read(self, node):
         slot = self.new_slot(I32, "read")
+        self.builder.store(ir.Constant(I32, 0), slot)
         self.builder.call(self.scanf_fn(), [self.str_ptr("%d"), slot])
         return self.builder.load(slot, name="read.val")
 
@@ -1451,7 +1459,7 @@ class Parser:
                     self.error("a member function cannot come before the first field")
                 fns.append(self.parse_fn(MemberFnNode))
                 continue
-            if fns:
+            if fns and (first.kind == "ident" or (first.kind == "keyword" and first.text in BUILTIN)):
                 self.error("a field cannot come after a member function")
             fields.append(self.parse_field())
             self.expect_eol()

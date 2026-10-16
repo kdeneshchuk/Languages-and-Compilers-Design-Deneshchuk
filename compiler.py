@@ -66,20 +66,21 @@ class FieldNode(Node):
         self.mutable = mutable
 
     def label(self):
-        return f"Field {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
+        return f"Member {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
 
 class StructNode(Node):
-    def __init__(self, line, col, name, fields):
+    def __init__(self, line, col, name, fields, fns):
         super().__init__(line, col)
         self.name = name
         self.fields = fields
+        self.fns = fns
 
     def label(self):
         return f"Struct {self.name}"
 
     def children(self):
-        return self.fields
+        return self.fields + self.fns
 
     def accept(self, visitor):
         return visitor.visit_struct(self)
@@ -111,6 +112,13 @@ class FnNode(Node):
 
     def accept(self, visitor):
         return visitor.visit_fn(self)
+
+class MemberFnNode(FnNode):
+    def label(self):
+        return f"MemberFn {self.name} -> {self.ret_type}"
+
+    def accept(self, visitor):
+        return visitor.visit_member_fn(self)
 
 class ProgramNode(Node):
     def __init__(self, line, col, structs, functions, statements, exit_node):
@@ -338,10 +346,26 @@ class MemberNode(ExprNode):
         self.fields = fields
 
     def label(self):
-        return "Member " + ".".join([self.name] + [f[0] for f in self.fields])
+        return "Field " + ".".join([self.name] + [f[0] for f in self.fields])
 
     def accept(self, visitor):
         return visitor.visit_member(self)
+
+class MemberCallNode(ExprNode):
+    def __init__(self, line, col, target, name, args):
+        super().__init__(line, col)
+        self.target = target
+        self.name = name
+        self.args = args
+
+    def label(self):
+        return f"MemberCall {self.name}"
+
+    def children(self):
+        return [self.target] + self.args
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
 
 class SemanticChecker:
     def __init__(self):
@@ -397,6 +421,13 @@ class SemanticChecker:
             if field.type_name not in BUILTIN and field.type_name not in self.structs:
                 raise CompileError(f"line {field.line}:{field.col}: unknown type '{field.type_name}'")
             field.index = index
+        fn_names = set()
+        for fn in node.fns:
+            if fn.name in seen:
+                raise CompileError(f"line {fn.line}:{fn.col}: member function '{fn.name}' has the name of a field of '{node.name}'")
+            if fn.name in fn_names:
+                raise CompileError(f"line {fn.line}:{fn.col}: member function '{fn.name}' is already declared in '{node.name}'")
+            fn_names.add(fn.name)
         self.structs[node.name] = node
 
     def check_known_type(self, type_name, at):
@@ -976,7 +1007,25 @@ class Parser:
             fields.append((field_tok.text, field_tok.line, field_tok.col))
         return fields
 
-    def parse_call(self, name_tok):
+    def parse_chain(self, name_tok):
+        fields = []
+        while (tok := self.peek()) is not None and tok.kind == "dot":
+            self.eat()
+            field_tok = self.expect("ident", "a field name")
+            nxt = self.peek()
+            if nxt is not None and nxt.kind == "lparen":
+                if fields:
+                    target = MemberNode(name_tok.line, name_tok.col, name_tok.text, fields)
+                else:
+                    target = VarNode(name_tok.line, name_tok.col, name_tok.text)
+                args = self.parse_args()
+                return MemberCallNode(field_tok.line, field_tok.col, target, field_tok.text, args)
+            fields.append((field_tok.text, field_tok.line, field_tok.col))
+        if fields:
+            return MemberNode(name_tok.line, name_tok.col, name_tok.text, fields)
+        return VarNode(name_tok.line, name_tok.col, name_tok.text)
+
+    def parse_args(self):
         self.eat()
         args = []
         tok = self.peek()
@@ -986,6 +1035,10 @@ class Parser:
                 self.eat()
                 args.append(self.parse_expr())
         self.expect("rparen", "')'")
+        return args
+
+    def parse_call(self, name_tok):
+        args = self.parse_args()
         return CallNode(name_tok.line, name_tok.col, name_tok.text, args)
 
     def parse_factor(self):
@@ -1005,10 +1058,7 @@ class Parser:
             nxt = self.peek()
             if nxt is not None and nxt.kind == "lparen":
                 return self.parse_call(tok)
-            fields = self.parse_fields()
-            if fields:
-                return MemberNode(tok.line, tok.col, tok.text, fields)
-            return VarNode(tok.line, tok.col, tok.text)
+            return self.parse_chain(tok)
 
         if tok.kind == "operator" and tok.text == "!":
             self.eat()
@@ -1091,22 +1141,30 @@ class Parser:
         lbrace = self.eat()
         self.expect_eol()
 
-        fields = []
+        fields, fns = [], []
         while True:
             if self.next_line() is None:
                 self.error("'{' is never closed", at=lbrace)
-            if self.peek().kind == "rbrace":
+            first = self.peek()
+            if first.kind == "rbrace":
                 self.eat()
                 self.expect_eol()
                 break
+            if first.kind == "keyword" and first.text == "fn":
+                if not fields:
+                    self.error("a member function cannot come before the first field")
+                fns.append(self.parse_fn(MemberFnNode))
+                continue
+            if fns:
+                self.error("a field cannot come after a member function")
             fields.append(self.parse_field())
             self.expect_eol()
 
         if not fields:
             self.error("empty struct", at=lbrace)
-        return StructNode(struct_tok.line, struct_tok.col, name_tok.text, fields)
+        return StructNode(struct_tok.line, struct_tok.col, name_tok.text, fields, fns)
 
-    def parse_fn(self):
+    def parse_fn(self, node_class=FnNode):
         fn_tok = self.eat()
         name_tok = self.expect("ident", "a function name")
         self.expect_op(":=")
@@ -1130,7 +1188,7 @@ class Parser:
         body = self.parse_block("'fn'")
         if body.exit_node is None:
             self.error("the body of a function must end with 'exit'", at=body)
-        return FnNode(name_tok.line, name_tok.col, name_tok.text, params, ret_tok.text, body)
+        return node_class(name_tok.line, name_tok.col, name_tok.text, params, ret_tok.text, body)
 
     def parse_init_value(self):
         brace = self.peek()

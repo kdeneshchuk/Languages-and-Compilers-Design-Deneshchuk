@@ -367,27 +367,42 @@ class MemberCallNode(ExprNode):
     def accept(self, visitor):
         return visitor.visit_member_call(self)
 
+class ThisNode(Node):
+    def __init__(self, line, col, struct_name):
+        super().__init__(line, col)
+        self.name = "this"
+        self.type_name = struct_name
+        self.mutable = True
+
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
         self.structs = {}
         self.fns = {}
         self.current_fn = None
+        self.methods = {}
+        self.current_struct = None
+        self.flags_ready = False
+        self.pending = []
 
     def check(self, tree):
         tree.accept(self)
 
-    def lookup(self, node, name):
+    def resolve_name(self, node, name):
         for frame in reversed(self.scopes):
             if name in frame:
-                return frame[name]
+                return frame[name], []
+        st = self.current_struct
+        if st is not None and any(f.name == name for f in st.fields):
+            return self.current_fn.this, [(name, node.line, node.col)]
+        if name in self.structs:
+            raise CompileError(f"line {node.line}:{node.col}: '{name}' is a type, not a variable")
         raise CompileError(f"line {node.line}:{node.col}: variable '{name}' is used before its declaration")
 
-    def resolve_chain(self, node):
-        decl = self.lookup(node, node.name)
-        t = decl.type_name
+    def walk_fields(self, type_name, fields):
+        t = type_name
         links, path = [], []
-        for fname, line, col in node.fields:
+        for fname, line, col in fields:
             if t not in self.structs:
                 raise CompileError(f"line {line}:{col}: cannot access field '{fname}' of a value of type {t}")
             field = next((f for f in self.structs[t].fields if f.name == fname), None)
@@ -396,14 +411,30 @@ class SemanticChecker:
             links.append(field)
             path.append(field.index)
             t = field.type_name
+        return links, path, t
+
+    def resolve_chain(self, node):
+        decl, head = self.resolve_name(node, node.name)
+        node.chain = head + node.fields
+        links, path, t = self.walk_fields(decl.type_name, node.chain)
         return decl, links, path, t
 
     def visit_program(self, node):
         for struct in node.structs:
             struct.accept(self)
+        for struct in node.structs:
+            for fn in struct.fns:
+                self.check_signature(fn)
         self.collect_signatures(node.functions)
+        for struct in node.structs:
+            for fn in struct.fns:
+                fn.accept(self)
         for fn in node.functions:
             fn.accept(self)
+        self.mark_mutating()
+        for call in self.pending:
+            self.check_call_mut(call)
+        self.flags_ready = True
         for stmt in node.statements:
             stmt.accept(self)
         node.exit_node.accept(self)
@@ -429,10 +460,25 @@ class SemanticChecker:
                 raise CompileError(f"line {fn.line}:{fn.col}: member function '{fn.name}' is already declared in '{node.name}'")
             fn_names.add(fn.name)
         self.structs[node.name] = node
+        self.methods[node.name] = {fn.name: fn for fn in node.fns}
+        for fn in node.fns:
+            fn.owner = node.name
+            fn.this = ThisNode(fn.line, fn.col, node.name)
+            fn.mutating = False
+            fn.this_calls = []
 
     def check_known_type(self, type_name, at):
         if type_name not in BUILTIN and type_name not in self.structs:
             raise CompileError(f"line {at.line}:{at.col}: unknown type '{type_name}'")
+
+    def check_signature(self, fn):
+        seen = set()
+        for p in fn.params:
+            if p.name in seen:
+                raise CompileError(f"line {p.line}:{p.col}: parameter '{p.name}' is already declared in '{fn.name}'")
+            seen.add(p.name)
+            self.check_known_type(p.type_name, p)
+        self.check_known_type(fn.ret_type, fn)
 
     def collect_signatures(self, functions):
         for fn in functions:
@@ -440,13 +486,7 @@ class SemanticChecker:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' has the name of a struct")
             if fn.name in self.fns:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' is already declared")
-            seen = set()
-            for p in fn.params:
-                if p.name in seen:
-                    raise CompileError(f"line {p.line}:{p.col}: parameter '{p.name}' is already declared in '{fn.name}'")
-                seen.add(p.name)
-                self.check_known_type(p.type_name, p)
-            self.check_known_type(fn.ret_type, fn)
+            self.check_signature(fn)
             self.fns[fn.name] = fn
 
     def visit_fn(self, node):
@@ -456,8 +496,22 @@ class SemanticChecker:
         node.body.accept(self)
         self.scopes, self.current_fn = saved_scopes, saved_fn
 
+    def visit_member_fn(self, node):
+        saved = (self.scopes, self.current_fn, self.current_struct)
+        self.scopes = [{p.name: p for p in node.params}]
+        self.current_fn = node
+        self.current_struct = self.structs[node.owner]
+        node.body.accept(self)
+        self.scopes, self.current_fn, self.current_struct = saved
+
     def visit_call(self, node):
-        fn = self.fns.get(node.name)
+        st = self.current_struct
+        if st is not None and node.name in self.methods[st.name]:
+            fn = self.methods[st.name][node.name]
+            node.this = self.current_fn.this
+        else:
+            fn = self.fns.get(node.name)
+            node.this = None
         if fn is None:
             raise CompileError(f"line {node.line}:{node.col}: function '{node.name}' is not declared")
         if len(node.args) != len(fn.params):
@@ -466,6 +520,8 @@ class SemanticChecker:
         for i, (arg, param) in enumerate(zip(node.args, fn.params), 1):
             arg.accept(self)
             self.check_assignable(arg, param.type_name, arg, f"pass argument {i} of '{node.name}'")
+        if node.this is not None:
+            self.current_fn.this_calls.append(fn)
         node.fn = fn
         node.type = fn.ret_type
         return node.type
@@ -526,9 +582,11 @@ class SemanticChecker:
         decl, links, path, target = self.resolve_chain(node)
         if not decl.mutable:
             raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': it is not mut")
-        for (fname, line, col), field in zip(node.fields, links):
+        for (fname, line, col), field in zip(node.chain, links):
             if not field.mutable:
                 raise CompileError(f"line {line}:{col}: cannot assign to field '{fname}': it is not mut")
+        if isinstance(decl, ThisNode):
+            self.current_fn.mutating = True
         node.value.accept(self)
         full = ".".join([node.name] + [f[0] for f in node.fields])
         self.check_assignable(node.value, target, node, f"assign to '{full}'")
@@ -566,13 +624,65 @@ class SemanticChecker:
         return node.type
 
     def visit_var(self, node):
-        node.decl = self.lookup(node, node.name)
-        node.type = node.decl.type_name
+        decl, head = self.resolve_name(node, node.name)
+        node.decl = decl
+        node.chain = head
+        node.links, node.path, node.type = self.walk_fields(decl.type_name, head)
         return node.type
 
     def visit_member(self, node):
-        node.decl, _, node.path, node.type = self.resolve_chain(node)
+        node.decl, node.links, node.path, node.type = self.resolve_chain(node)
         return node.type
+
+    def visit_member_call(self, node):
+        t = node.target.accept(self)
+        if t not in self.structs:
+            raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on a value of type {t}: "
+                               f"it has no member functions")
+        fn = self.methods[t].get(node.name)
+        if fn is None:
+            raise CompileError(f"line {node.line}:{node.col}: struct '{t}' has no member function '{node.name}'")
+        if len(node.args) != len(fn.params):
+            raise CompileError(f"line {node.line}:{node.col}: '{node.name}' takes "
+                               f"{len(fn.params)} argument(s), got {len(node.args)}")
+        for i, (arg, param) in enumerate(zip(node.args, fn.params), 1):
+            arg.accept(self)
+            self.check_assignable(arg, param.type_name, arg, f"pass argument {i} of '{node.name}'")
+        node.fn = fn
+        node.type = fn.ret_type
+        decl = node.target.decl
+        if isinstance(decl, ThisNode):
+            self.current_fn.this_calls.append(fn)
+        if self.flags_ready:
+            self.check_call_mut(node)
+        else:
+            self.pending.append(node)
+        return node.type
+
+    def mark_mutating(self):
+        changed = True
+        while changed:
+            changed = False
+            for st in self.structs.values():
+                for fn in st.fns:
+                    if not fn.mutating and any(c.mutating for c in fn.this_calls):
+                        fn.mutating = True
+                        changed = True
+
+    def check_call_mut(self, node):
+        if not node.fn.mutating:
+            return
+        target = node.target
+        decl = target.decl
+        names = [f[0] for f in target.chain]
+        if not isinstance(decl, ThisNode):
+            names = [decl.name] + names
+        desc = ".".join(names)
+        if not decl.mutable:
+            raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on '{desc}': it is not mut")
+        for (fname, _, _), link in zip(target.chain, target.links):
+            if not link.mutable:
+                raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on '{desc}': '{fname}' is not mut")
 
     def visit_init(self, node):
         raise CompileError(f"line {node.line}:{node.col}: '{{}}' can only initialise a field of a struct type")
@@ -642,6 +752,7 @@ class CodeGen:
         self.struct_types = {}
         self.fns = {}
         self.current_fn = None
+        self.member_fns = {}
 
     def ir_type(self, name):
         if name in LLVM_TYPES:
@@ -676,6 +787,10 @@ class CodeGen:
         for struct in node.structs:
             struct.accept(self)
         self.declare_functions(node.functions)
+        self.declare_member_fns(node.structs)
+        for struct in node.structs:
+            for fn in struct.fns:
+                fn.accept(self)
         for fn in node.functions:
             fn.accept(self)
         for stmt in node.statements:
@@ -693,6 +808,15 @@ class CodeGen:
                                    [self.ir_type(p.type_name) for p in fn.params])
             self.fns[fn.name] = ir.Function(self.module, fnty, name=f"fn.{fn.name}")
 
+    def declare_member_fns(self, structs):
+        for st in structs:
+            this_ty = ir.PointerType(self.struct_types[st.name])
+            for fn in st.fns:
+                fnty = ir.FunctionType(self.ir_type(fn.ret_type),
+                                       [this_ty] + [self.ir_type(p.type_name) for p in fn.params])
+                self.member_fns[(st.name, fn.name)] = ir.Function(
+                    self.module, fnty, name=f"{st.name}_{fn.name}")
+
     def visit_fn(self, node):
         saved = (self.builder, self.function, self.n_slots, self.current_fn)
         fn = self.fns[node.name]
@@ -705,9 +829,26 @@ class CodeGen:
         node.body.accept(self)
         self.builder, self.function, self.n_slots, self.current_fn = saved
 
+    def visit_member_fn(self, node):
+        saved = (self.builder, self.function, self.n_slots, self.current_fn)
+        fn = self.member_fns[(node.owner, node.name)]
+        self.function, self.current_fn, self.n_slots = fn, node, 0
+        self.builder = ir.IRBuilder(fn.append_basic_block("entry"))
+        fn.args[0].name = "this"
+        node.this.ptr = fn.args[0]
+        for arg, p in zip(fn.args[1:], node.params):
+            arg.name = p.name
+            p.ptr = self.new_slot(self.ir_type(p.type_name), p.name)
+            self.builder.store(arg, p.ptr)
+        node.body.accept(self)
+        self.builder, self.function, self.n_slots, self.current_fn = saved
+
     def visit_call(self, node):
         args = [coerce(self.builder, a.accept(self), a.type, p.type_name)
                 for a, p in zip(node.args, node.fn.params)]
+        if node.this is not None:
+            fn = self.member_fns[(node.fn.owner, node.fn.name)]
+            return self.builder.call(fn, [node.this.ptr] + args, name=f"{node.name}.ret")
         return self.builder.call(self.fns[node.name], args, name=f"{node.name}.ret")
 
     def visit_decl(self, node):
@@ -783,11 +924,20 @@ class CodeGen:
             return self.builder.icmp_signed(pred, lhs, rhs)
 
     def visit_var(self, node):
-        return self.builder.load(node.decl.ptr)
+        ptr = self.address_of(node.decl.ptr, node.path, node.name)
+        return self.builder.load(ptr)
 
     def visit_member(self, node):
         ptr = self.address_of(node.decl.ptr, node.path, node.name)
         return self.builder.load(ptr)
+
+    def visit_member_call(self, node):
+        target = node.target
+        obj = self.address_of(target.decl.ptr, target.path, target.name)
+        args = [coerce(self.builder, a.accept(self), a.type, p.type_name)
+                for a, p in zip(node.args, node.fn.params)]
+        fn = self.member_fns[(node.fn.owner, node.fn.name)]
+        return self.builder.call(fn, [obj] + args, name=f"{node.name}.ret")
 
     def visit_init(self, node):
         values = [e.accept(self) for e in node.items]

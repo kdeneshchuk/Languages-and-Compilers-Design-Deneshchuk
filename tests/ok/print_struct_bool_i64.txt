@@ -1,0 +1,9 @@
+struct Flags
+{
+    bool a
+    bool b
+    i64 big
+}
+Flags f{false, true, 0 - 5}
+print(f)
+exit 0

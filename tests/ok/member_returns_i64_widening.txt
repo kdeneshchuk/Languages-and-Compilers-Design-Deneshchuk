@@ -1,0 +1,12 @@
+struct Acc
+{
+    i32 n
+    fn wide := () -> i64
+    {
+        exit n
+    }
+}
+Acc a{2000000000}
+i64 w{a.wide()}
+print(w * 2)
+exit w

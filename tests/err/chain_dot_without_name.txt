@@ -1,0 +1,2 @@
+i32 a{p.moved(1).}
+exit 0

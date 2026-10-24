@@ -1,0 +1,1 @@
+compilation error: line 38:13: cannot call 'shift' on a value of type i32: it has no member functions

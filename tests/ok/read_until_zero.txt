@@ -1,0 +1,9 @@
+i32 mut sum{0}
+i32 mut v{read()}
+while v != 0
+{
+    sum := sum + v
+    v := read()
+}
+print(sum)
+exit sum

@@ -1,0 +1,29 @@
+struct Point
+{
+    i32 x
+    i32 y
+    fn d2 := () -> i32
+    {
+        i32 r{x * x + y * y}
+        exit r
+    }
+}
+struct Circle
+{
+    Point center
+    i32 radius
+}
+struct Ring
+{
+    Circle outer
+    i32 w
+}
+Point p{3, 4}
+Circle c{p, 2}
+Point q{1, 2}
+Circle c2{q, 2}
+Ring g{c2, 1}
+i32 a{c.center.d2()}
+i32 b{g.outer.center.d2()}
+i32 res{a * 100 + b}
+exit res

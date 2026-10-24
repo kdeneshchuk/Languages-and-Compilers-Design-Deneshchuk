@@ -1,0 +1,21 @@
+struct Point
+{
+    i32 mut x
+    fn bump := () -> i32
+    {
+        x := x + 1
+        exit x
+    }
+    fn bump2 := () -> i32
+    {
+        i32 a{bump()}
+        i32 b{bump()}
+        i32 r{a * 10 + b}
+        exit r
+    }
+}
+Point mut p{5}
+i32 v{p.bump2()}
+i32 w{p.x}
+i32 res{v * 100 + w}
+exit res

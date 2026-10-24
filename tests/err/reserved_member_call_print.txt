@@ -1,0 +1,3 @@
+Point p{1}
+i32 a{p.print()}
+exit 0

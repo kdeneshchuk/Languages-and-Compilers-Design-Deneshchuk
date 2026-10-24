@@ -1,0 +1,5 @@
+struct print
+{
+    i32 x
+}
+exit 0

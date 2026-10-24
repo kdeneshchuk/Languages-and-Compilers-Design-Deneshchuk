@@ -1,0 +1,1 @@
+compilation error: line 11:9: cannot call 'shift' on 'q': it is not mut

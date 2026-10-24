@@ -1,0 +1,17 @@
+struct A_B
+{
+    i32 x
+    fn c := () -> i32
+    {
+        exit 1
+    }
+}
+struct A
+{
+    i32 x
+    fn B_c := () -> i32
+    {
+        exit 2
+    }
+}
+exit 0

@@ -1,0 +1,2 @@
+i32 a{p.moved(1).print()}
+exit 0

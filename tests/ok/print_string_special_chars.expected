@@ -1,0 +1,3 @@
+a\tb %d %s 100%
+{} [] ' ; := ->
+Program exit with result 0

@@ -1,0 +1,20 @@
+struct Point
+{
+    i32 x
+    i32 y
+}
+struct Circle
+{
+    Point center
+    i32 radius
+    fn getCenter := () -> Point
+    {
+        exit center
+    }
+}
+Point p{3, 4}
+Circle c{p, 2}
+print(c.getCenter())
+Point q{c.getCenter()}
+print(q.y)
+exit q.x

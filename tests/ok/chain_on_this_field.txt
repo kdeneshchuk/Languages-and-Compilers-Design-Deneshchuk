@@ -1,0 +1,22 @@
+struct Point
+{
+    i32 x
+    fn moved := (i32 dx) -> Point
+    {
+        Point q{x + dx}
+        exit q
+    }
+}
+struct Circle
+{
+    Point center
+    i32 radius
+    fn far := () -> i32
+    {
+        i32 r{center.moved(10).x}
+        exit r
+    }
+}
+Point p{3}
+Circle c{p, 2}
+exit c.far()

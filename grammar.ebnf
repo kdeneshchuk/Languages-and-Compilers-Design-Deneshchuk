@@ -1,14 +1,15 @@
 program   ::= { struct } { fn } { statement } exit
-struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 field_decl ::= type [ "mut" ] ident NL
 fn        ::= "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL fn_block
 param     ::= type ident
 fn_block  ::= "{" NL ( statement { statement } exit | exit ) "}" NL
-statement ::= decl NL | assign NL | if | while
+statement ::= decl NL | assign NL | print NL | if | while
 decl      ::= type [ "mut" ] ident "{" init { "," init } "}"
 init      ::= expr | "{" init { "," init } "}"
 type      ::= "i32" | "i64" | "bool" | ident
 assign    ::= ident { "." ident } ":=" expr
+print     ::= "print" "(" ( string | expr ) ")"
 if        ::= "if" expr NL block [ "else" NL block ]
 while     ::= "while" expr NL block
 block     ::= "{" NL ( statement { statement } [ exit ] | exit ) "}" NL
@@ -16,8 +17,14 @@ exit      ::= "exit" factor NL
 expr      ::= arith [ ( "==" | "!=" ) arith ]
 arith     ::= term { ( "+" | "-" ) term }
 term      ::= factor { "*" factor }
-factor    ::= number | "true" | "false" | ident | field | call | "!" factor
+factor    ::= number | "true" | "false" | ident | field | call | member_call
+            | read | "!" factor
 field     ::= ident "." ident { "." ident }
-call      ::= ident "(" [ expr { "," expr } ] ")"
+call      ::= ident "(" [ args ] ")"
+member_call ::= ident { "." ident } "." ident "(" [ args ] ")"
+              { "." ident { "." ident } [ "(" [ args ] ")" ] }
+args      ::= expr { "," expr }
+read      ::= "read" "(" ")"
+string    ::= '"' { any byte except '"' and NL } '"'
 ident     ::= ( letter | "_" ) { letter | digit | "_" }
 number    ::= digit { digit }

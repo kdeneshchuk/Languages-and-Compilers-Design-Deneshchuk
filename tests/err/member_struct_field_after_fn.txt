@@ -1,0 +1,14 @@
+struct P
+{
+    i32 x
+}
+struct Q
+{
+    i32 x
+    fn f := () -> i32
+    {
+        exit 1
+    }
+    P inner
+}
+exit 0

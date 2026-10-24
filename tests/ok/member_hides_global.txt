@@ -1,0 +1,28 @@
+struct Point
+{
+    i32 x
+    fn get := () -> i32
+    {
+        exit x
+    }
+    fn viaMethod := () -> i32
+    {
+        i32 r{get()}
+        exit r
+    }
+}
+fn get := () -> i32
+{
+    exit 100
+}
+fn viaGlobal := () -> i32
+{
+    i32 r{get()}
+    exit r
+}
+Point p{7}
+i32 a{p.viaMethod()}
+i32 b{viaGlobal()}
+i32 c{get()}
+i32 res{a * 10000 + b * 100 + c}
+exit res

@@ -1,0 +1,11 @@
+struct Point
+{
+    i32 x
+    fn plus := (i32 this) -> i32
+    {
+        i32 r{x + this}
+        exit r
+    }
+}
+Point p{40}
+exit p.plus(2)

@@ -1,0 +1,14 @@
+struct Point
+{
+    i32 mut x
+    fn shift := (i32 dx) -> i32
+    {
+        x := x + dx
+        exit x
+    }
+}
+Point mut p{1}
+i32 a{p.shift(p.shift(1))}
+i32 b{p.x}
+i32 res{a * 10 + b}
+exit res

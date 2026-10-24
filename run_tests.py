@@ -20,9 +20,14 @@ def run_output_test(txt_path):
     )
 
     if result.returncode == 0:
+        try:
+            with open(txt_path[:-4] + ".in") as f:
+                stdin_text = f.read()
+        except FileNotFoundError:
+            stdin_text = ""
         lli_result = subprocess.run(
             ["lli", OUT_LL],
-            capture_output=True, text=True
+            capture_output=True, text=True, input=stdin_text
         )
         actual = lli_result.stdout.strip()
     else:

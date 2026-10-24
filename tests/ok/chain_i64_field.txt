@@ -1,0 +1,12 @@
+struct Big
+{
+    i64 v
+    fn make := (i32 n) -> Big
+    {
+        Big b{n}
+        exit b
+    }
+}
+Big z{1}
+i64 r{z.make(2000000000).v * 2}
+exit r

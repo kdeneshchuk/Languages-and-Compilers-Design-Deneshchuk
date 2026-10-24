@@ -1,0 +1,24 @@
+struct Point
+{
+    i32 mut x
+    fn get := () -> i32
+    {
+        exit x
+    }
+}
+struct Ring
+{
+    Point center
+    i32 r
+}
+fn peek := (Ring g) -> i32
+{
+    i32 v{g.center.get()}
+    exit v
+}
+Point p{7}
+Ring q{p, 1}
+i32 a{q.center.get()}
+i32 b{peek(q)}
+i32 res{a * 100 + b}
+exit res

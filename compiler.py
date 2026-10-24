@@ -1998,15 +1998,15 @@ def main_cli():
         args = args[1:]
 
     if mode is None and len(args) != 2:
-        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
         sys.exit(2)
     if mode is not None and len(args) != 1:
-        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
         sys.exit(2)
 
     if args[0].startswith("-"):
         print(f"unknown option {args[0]!r}", file=sys.stderr)
-        print("usage: compiler.py [--ast | --tokens] input.txt [output.ll]", file=sys.stderr)
+        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
         sys.exit(2)
 
     src_path = args[0]

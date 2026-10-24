@@ -4,8 +4,8 @@
 A compiler for a small language with `i32`/`i64`/`bool` variable
 declarations (const by default, `mut` for mutable), assignments, `exit`,
 comparisons, `!`, `if`/`else` and `while` with blocks, structs with
-field access and member functions, functions with calls, and the
-built-ins `read()` and `print`. Source is tokenized by a hand-written
+field access and member functions, functions with calls, callable objects, lambdas with captures, and
+the built-ins `read()` and `print`. Source is tokenized by a hand-written
 lexer, parsed by a hand-written recursive-descent parser into an AST,
 checked by a `SemanticChecker` visitor that resolves names, scopes,
 fields, member functions and types before any LLVM instruction exists,
@@ -18,6 +18,7 @@ with real precedence and left associativity, optionally followed by one
 ## Run the compiler
     python3 compiler.py input.txt output.ll      # compile
     python3 compiler.py --ast input.txt           # print the AST, write nothing
+    python3 compiler.py --ast-checked input.txt   # print the AST after the semantic pass, write nothing
     python3 compiler.py --tokens input.txt         # print the token list, write nothing
     lli output.ll                                  # quick run, no linking
     lli output.ll < input.in                       # a program that calls read()
@@ -26,7 +27,10 @@ with real precedence and left associativity, optionally followed by one
     clang -fPIE output.o -o program && ./program
 
 `--ast` runs the semantic pass first, so a program that does not type-check
-is rejected in that mode too.
+is rejected in that mode too. `--ast` prints the tree the parser built;
+`--ast-checked` prints it after the semantic pass, where a lambda has become
+its struct, its `call` and its variable, and a call of an object is a
+`CallableCall`.
 
 ## Language
     i32 x{5}                # const declaration, initialiser mandatory
@@ -153,6 +157,146 @@ can be called on it, also a mutating one, but nothing can be assigned to
 it (`p.moved(1).x := 5` is an error). A `.` after a call whose result is
 not a struct (`p.d2().x`) is an error at that `.`.
 
+## Callable objects
+    struct Scale
+    {
+        i32 k
+        fn call := (i32 v) -> i32
+        {
+            i32 r{v * k}
+            exit r
+        }
+    }
+    struct Shape
+    {
+        Scale scale
+        i32 side
+        fn grown := () -> i32
+        {
+            i32 g{scale(side)}
+            exit g
+        }
+    }
+    Scale triple{3}
+    Shape s{{2}, 5}
+    i32 a{triple(14)}         # 42: the same as triple.call(14)
+    i32 b{s.scale(7)}         # 14: scale is a field, so this is s.scale.call(7)
+    i32 c{s.grown()}          # 10: inside grown, scale(side) calls the field
+
+A struct that declares a member function named `call` can be called like
+a function: `triple(14)` means `triple.call(14)`, and the longer form
+stays legal. For a name followed by `(` the semantic pass decides:
+
+1. If the name is a variable visible here (a parameter, a local, a field
+   inside a member function, a capture inside a lambda), its type must be
+   a struct that declares `call`, and the call is `name.call(args)`.
+2. Otherwise the name is a function: a member function of the current
+   struct first, then a global function.
+3. Otherwise it is an unknown function.
+
+If the name is both a visible variable and a function, a call is an
+error at the name (`'twice' is both a variable and a function: rename
+one of them`); declaring both is allowed. After a dot the same rule
+works: in `obj.name(args)`, if `name` is a field of `obj`, the call is
+`obj.name.call(args)`.
+
+The parser cannot tell a variable from a function, so `triple(14)` stays
+a `Call` in `--ast`. The semantic pass puts a member call in place of it:
+the target, the member function `call` and the same arguments. That
+member call is checked by the code that already checks member calls (the
+arguments and the mutation rule), and the code generator only emits it,
+so the IR of `triple(14)` and of `triple.call(14)` is the same line.
+`--ast-checked` shows it as `CallableCall`. The messages name the object,
+not `call`: `'p' is not callable: Point has no member function 'call'`,
+`'n' is not callable: it is i32`, `'triple' takes 1 argument(s), got 2`.
+The mutation rule holds as for any other member function: if `call`
+assigns a field, `c()` needs a `mut` object (`cannot call 'c': its 'call'
+changes it, and it is not mut`), also when `c` is a field or a parameter.
+
+## Lambdas
+    i32 mut k{10}
+    fn add_k := [k](i32 y) -> i32
+    {
+        i32 r{k + y}
+        exit r
+    }
+    k := 100
+    print(add_k(5))           # 15: add_k keeps the 10 it took at its declaration
+    print(k)                  # 100
+
+A lambda is a function declared where a statement stands. The list in
+brackets names the variables it takes with it, its captures. A line that
+starts with `fn name := [` is a lambda; `fn` without `[` inside a block
+stays an error, and so does a capture list on a member function. A lambda
+stands at the top level among the statements and inside any block: a
+function, a member function, `if`, `while`, another lambda. Its body ends
+with `exit`, as the body of any function.
+
+A capture is a copy taken at the declaration: changing the variable later
+does not change the lambda, and a lambda declared inside a loop takes the
+current value on every iteration. Inside the body a capture is const
+(`cannot assign to 'k': the capture 'k' is const, write [mut k]`). The
+body sees its parameters, its locals, its captures and the global
+functions, nothing else: not the top-level variables, not the locals and
+parameters of the enclosing function, not the fields of the enclosing
+struct, unless they are captured. A name that is visible where the lambda
+is declared but is not in the capture list is reported as `'k' is not
+captured by lambda 'add_k': add it to the capture list, [k]`. A name in
+the capture list must be visible there and may be written once, and a
+parameter cannot have the name of a capture. A lambda cannot call itself:
+its name is declared after its body, and the body does not see its own
+member function `call` either. A lambda may capture another lambda.
+
+The semantic pass rewrites a lambda into three things the compiler
+already has: a struct with one field per capture, of the type of the
+captured variable; its member function `call` with the parameters, the
+result type and the body of the lambda; and a variable `add_k` of that
+struct, initialised at this point with the captured values, as
+`lambda.add_k add_k{k}`. The struct is called `lambda.add_k` in the
+compiler (a dot cannot appear in a name a program declares, so it never
+clashes; a second lambda called `add_k` gets `lambda.add_k.1`). After
+that `add_k(5)` is a callable object. `--ast` stays the parse tree
+(`Lambda`, `Capture`); `--ast-checked` prints the tree after the
+semantic pass: `Struct lambda.add_k`, `MemberFn call`,
+`Decl add_k lambda.add_k` and `CallableCall add_k`.
+
+The type of a lambda has no name, so no parameter, result type, variable
+or field can have it. A lambda cannot be passed as an argument, be the
+value of `exit`, initialise a variable or a field, be assigned or be
+printed (`'times' (a lambda: its type has no name)`). Its captures are
+not visible outside its body: `add_k.k` is an error.
+
+**Mutable captures (additional task).**
+
+    i32 n{0}
+    fn next := [mut n]() -> i32
+    {
+        n := n + 1
+        exit n
+    }
+    print(next())             # 1
+    print(next())             # 2
+    fn twice := [mut next]() -> i32
+    {
+        i32 a{next()}
+        i32 b{next()}
+        i32 r{a * 10 + b}
+        exit r
+    }
+    print(twice())            # 34: twice counts on its own copy of next
+    print(next())             # 3
+    exit n                    # 0: the original n never changes
+
+`[mut n]` gives the lambda its own mutable copy of `n`: the field of the
+struct is `mut`. A call that assigns a mut capture is a mutating member
+function, so the mutation rule decides where it may be called. The
+closure variable is `mut` when one of its captures is `mut`, so a call
+like `next()` works at the place of the declaration. A capture of another
+lambda is const unless it is written `[mut next]`: with `[next]` the call
+inside `twice` is an error (`cannot call 'next': its 'call' changes it,
+and 'next' is not mut`). The original variable never changes, and a mut
+capture of a const variable is allowed: it is a copy.
+
 ## read() and print
     i32 a{read()}             # reads one integer from stdin, the result is i32
     print("text")             # a string literal, printed as written
@@ -204,7 +348,9 @@ a struct.
 
 Structs come first, then functions, then statements, then the final
 `exit`; nothing follows it. A struct after a function or a statement, or
-a function after a statement, is an error at that line. `exit` takes one
+a function after a statement, is an error at that line. A lambda is a
+statement, not a function: it stands among the statements and inside any
+block, so it never breaks this order. `exit` takes one
 operand (a constant, a variable, a field chain, a call, `read()` or `!`
 with a factor), never an operation; at the top level the operand has a
 built-in type.
@@ -232,6 +378,12 @@ function body also falls back to the fields of its structure after the
 frames. Every `Var`, `Member` and `Assign` node gets `node.decl`, the
 declaration it resolved to, and a chain also gets the list of field
 indices, so the code generator never looks up a name or a field.
+
+A lambda body starts from a fresh stack like a function body, with its
+parameters in the bottom frame; its captures are the fields of its struct,
+found after the frames as in a member function. The names visible where
+the lambda is declared are kept only to tell `'k' is not captured` from
+`used before its declaration`.
 
 ## Code generation
 Every `if` becomes `then`, `else` (when there is one) and `merge` basic
@@ -272,6 +424,19 @@ reports an error. For a call in the middle of a chain a field of the
 result is an `extractvalue`, and for a member function call on a result
 the result is stored into a temporary `alloca` (`chain.tmp`) whose
 address is passed as `this`.
+
+**Lambdas.** The struct `lambda.add_k` is a type like any other,
+`%"lambda.add_k" = type {i32}`, and its `call` is a member function of the
+module, `lambda.add_k_call`, with the object as its first parameter. The
+checker keeps the structs it creates in `ProgramNode.lambda_structs`, so
+the generator declares them with the other structs before any body is
+generated. The declaration of the closure variable is an `alloca` in the
+entry block, then a `gep` and a `store` of the current value of the
+captured variable per capture, at the place of the declaration (so a
+lambda inside a loop copies again on every iteration). The body is
+generated once, as a function, not where the lambda stands. A call passes
+the address of the closure variable, then the arguments: `call i32
+@"lambda.add_k_call"(%"lambda.add_k"* %"add_k", i32 5)`.
 
 **read and print.** `printf` and `scanf` are declared once in the module.
 `read()` stores 0 into an `alloca` in the entry block, calls `scanf` with

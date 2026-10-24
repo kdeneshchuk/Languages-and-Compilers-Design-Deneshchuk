@@ -1,0 +1,16 @@
+struct Scale
+{
+    i32 k
+    fn call := (i32 v) -> i32
+    {
+        i32 r{v * k}
+        exit r
+    }
+}
+Scale triple{3}
+fn f := [triple](i32 v) -> i32
+{
+    i32 r{triple(v)}
+    exit r
+}
+exit f(5)

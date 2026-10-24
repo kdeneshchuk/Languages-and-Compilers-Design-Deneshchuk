@@ -4,7 +4,9 @@ field_decl ::= type [ "mut" ] ident NL
 fn        ::= "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL fn_block
 param     ::= type ident
 fn_block  ::= "{" NL ( statement { statement } exit | exit ) "}" NL
-statement ::= decl NL | assign NL | print NL | if | while
+lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]" "(" [ param { "," param } ] ")" "->" type NL fn_block
+capture   ::= [ "mut" ] ident
+statement ::= decl NL | assign NL | print NL | if | while | lambda
 decl      ::= type [ "mut" ] ident "{" init { "," init } "}"
 init      ::= expr | "{" init { "," init } "}"
 type      ::= "i32" | "i64" | "bool" | ident

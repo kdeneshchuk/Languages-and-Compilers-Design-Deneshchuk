@@ -1,0 +1,10 @@
+i32 mut k{10}
+fn add_k := [k](i32 y) -> i32
+{
+    i32 r{k + y}
+    exit r
+}
+k := 100
+print(add_k(5))
+print(k)
+exit add_k(1)

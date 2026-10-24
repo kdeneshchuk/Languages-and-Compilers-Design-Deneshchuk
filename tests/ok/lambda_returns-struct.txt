@@ -1,0 +1,14 @@
+struct Point
+{
+    i32 x
+    i32 y
+}
+fn mk := [](i32 a) -> Point
+{
+    Point q{a, a}
+    exit q
+}
+Point p{mk(3)}
+print(p)
+print(mk(3).x)
+exit 0

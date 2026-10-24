@@ -1,0 +1,11 @@
+i32 base{100}
+i32 n{0}
+fn f := [base, mut n](i32 v) -> i32
+{
+    n := n + v
+    i32 r{base + n}
+    exit r
+}
+print(f(1))
+print(f(2))
+exit n

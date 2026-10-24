@@ -1,0 +1,1 @@
+compilation error: line 6:15: 'base' is not captured by lambda 'inner': add it to the capture list, [base]

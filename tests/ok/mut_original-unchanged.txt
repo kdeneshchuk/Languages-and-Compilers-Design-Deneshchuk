@@ -1,0 +1,11 @@
+i32 mut n{5}
+fn f := [mut n]() -> i32
+{
+    n := n * 2
+    exit n
+}
+print(f())
+print(f())
+n := 7
+print(f())
+exit n

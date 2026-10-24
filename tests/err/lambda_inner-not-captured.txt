@@ -1,0 +1,12 @@
+i32 base{100}
+fn outer := [base](i32 a) -> i32
+{
+    fn inner := [](i32 b) -> i32
+    {
+        i32 r{base + b}
+        exit r
+    }
+    i32 s{inner(a)}
+    exit s
+}
+exit outer(5)

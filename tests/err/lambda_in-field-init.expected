@@ -1,0 +1,1 @@
+compilation error: line 18:10: cannot initialise field 's' with 'id' (a lambda: its type has no name)

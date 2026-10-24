@@ -1,0 +1,6 @@
+fn seven := () -> i64
+{
+    exit 7
+}
+i64 x{seven()}
+exit x

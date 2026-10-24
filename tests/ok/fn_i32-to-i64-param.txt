@@ -1,0 +1,7 @@
+fn twice := (i64 a) -> i64
+{
+    i64 r{a + a}
+    exit r
+}
+i32 x{2000000000}
+exit twice(x)

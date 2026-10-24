@@ -1,0 +1,1 @@
+compilation error: line 3:5: cannot exit function 'f' of type bool with a value of type i32

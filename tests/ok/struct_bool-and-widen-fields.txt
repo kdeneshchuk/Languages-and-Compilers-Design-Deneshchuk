@@ -1,0 +1,14 @@
+struct F
+{
+    bool mut on
+    i64 mut n
+}
+F mut f{false, 1}
+f.on := true
+i32 a{7}
+f.n := a
+if f.on
+{
+    exit f.n
+}
+exit 0

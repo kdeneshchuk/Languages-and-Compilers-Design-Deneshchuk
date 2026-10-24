@@ -795,6 +795,9 @@ class SemanticChecker:
 
     def visit_assign(self, node):
         decl, links, path, target = self.resolve_chain(node)
+        if self.is_lambda_type(target):
+            raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': "
+                               f"it is a lambda, its type has no name")
         if not decl.mutable:
             raise CompileError(f"line {node.line}:{node.col}: cannot assign to '{node.name}': it is not mut")
         for (fname, line, col), field in zip(node.chain, links):

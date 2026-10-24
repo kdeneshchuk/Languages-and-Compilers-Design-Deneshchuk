@@ -1,0 +1,16 @@
+struct Counter
+{
+    i32 mut n
+    fn call := () -> i32
+    {
+        n := n + 1
+        exit n
+    }
+}
+Counter mut c{0}
+fn f := [c]() -> i32
+{
+    i32 r{c()}
+    exit r
+}
+exit f()

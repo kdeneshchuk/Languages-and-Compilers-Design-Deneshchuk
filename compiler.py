@@ -439,13 +439,19 @@ class SemanticChecker:
     def check(self, tree):
         tree.accept(self)
 
-    def resolve_name(self, node, name):
+    def find_name(self, node, name):
         for frame in reversed(self.scopes):
             if name in frame:
                 return frame[name], []
         st = self.current_struct
         if st is not None and any(f.name == name for f in st.fields):
             return self.current_fn.this, [(name, node.line, node.col)]
+        return None
+
+    def resolve_name(self, node, name):
+        found = self.find_name(node, name)
+        if found is not None:
+            return found
         if name in self.structs:
             raise CompileError(f"line {node.line}:{node.col}: '{name}' is a type, not a variable")
         raise CompileError(f"line {node.line}:{node.col}: variable '{name}' is used before its declaration")
@@ -561,8 +567,27 @@ class SemanticChecker:
         node.body.accept(self)
         self.scopes, self.current_fn, self.current_struct = saved
 
+    def visit_callable(self, node):
+        target = VarNode(node.line, node.col, node.name)
+        t = target.accept(self)
+        if t not in self.structs:
+            raise CompileError(f"line {node.line}:{node.col}: '{node.name}' is not callable: it is {t}")
+        if "call" not in self.methods[t]:
+            raise CompileError(f"line {node.line}:{node.col}: '{node.name}' is not callable: "
+                               f"{t} has no member function 'call'")
+        sugar = MemberCallNode(node.line, node.col, target, "call", node.args)
+        sugar.shown = node.name
+        node.sugar = sugar
+        node.type = sugar.accept(self)
+        return node.type
+
     def visit_call(self, node):
         st = self.current_struct
+        if self.find_name(node, node.name) is not None:
+            if (st is not None and node.name in self.methods[st.name]) or node.name in self.fns:
+                raise CompileError(f"line {node.line}:{node.col}: '{node.name}' is both a variable "
+                                   f"and a function: rename one of them")
+            return self.visit_callable(node)
         if st is not None and node.name in self.methods[st.name]:
             fn = self.methods[st.name][node.name]
             node.this = self.current_fn.this
@@ -698,6 +723,34 @@ class SemanticChecker:
         node.links, node.path, node.type = self.walk_fields(t, node.fields)
         return node.type
 
+    def call_label(self, node):
+        return getattr(node, "shown", None) or node.name
+
+    def visit_field_call(self, node, t):
+        field = next(f for f in self.structs[t].fields if f.name == node.name)
+        target = node.target
+        entry = (node.name, node.line, node.col)
+        if isinstance(target, VarNode):
+            inner = MemberNode(target.line, target.col, target.name, [entry])
+            shown = f"{target.name}.{node.name}"
+        elif isinstance(target, MemberNode):
+            inner = MemberNode(target.line, target.col, target.name, target.fields + [entry])
+            shown = ".".join([target.name] + [f[0] for f in target.fields] + [node.name])
+        else:
+            inner = ResultFieldNode(node.line, node.col, target, [entry])
+            shown = node.name
+        if field.type_name not in self.structs:
+            raise CompileError(f"line {node.line}:{node.col}: '{shown}' is not callable: "
+                               f"it is {field.type_name}")
+        if "call" not in self.methods[field.type_name]:
+            raise CompileError(f"line {node.line}:{node.col}: '{shown}' is not callable: "
+                               f"{field.type_name} has no member function 'call'")
+        sugar = MemberCallNode(node.line, node.col, inner, "call", node.args)
+        sugar.shown = shown
+        node.sugar = sugar
+        node.type = sugar.accept(self)
+        return node.type
+
     def visit_member_call(self, node):
         t = node.target.accept(self)
         if t not in self.structs:
@@ -705,14 +758,17 @@ class SemanticChecker:
             raise CompileError(f"line {line}:{col}: cannot call '{node.name}' on a value of type {t}: "
                                f"it has no member functions")
         fn = self.methods[t].get(node.name)
+        if fn is None and any(f.name == node.name for f in self.structs[t].fields):
+            return self.visit_field_call(node, t)
         if fn is None:
             raise CompileError(f"line {node.line}:{node.col}: struct '{t}' has no member function '{node.name}'")
+        label = self.call_label(node)
         if len(node.args) != len(fn.params):
-            raise CompileError(f"line {node.line}:{node.col}: '{node.name}' takes "
+            raise CompileError(f"line {node.line}:{node.col}: '{label}' takes "
                                f"{len(fn.params)} argument(s), got {len(node.args)}")
         for i, (arg, param) in enumerate(zip(node.args, fn.params), 1):
             arg.accept(self)
-            self.check_assignable(arg, param.type_name, arg, f"pass argument {i} of '{node.name}'")
+            self.check_assignable(arg, param.type_name, arg, f"pass argument {i} of '{label}'")
         node.fn = fn
         node.type = fn.ret_type
         node.temp = isinstance(node.target, (CallNode, MemberCallNode, ResultFieldNode))
@@ -746,10 +802,17 @@ class SemanticChecker:
         if not isinstance(decl, ThisNode):
             names = [decl.name] + names
         desc = ".".join(names)
+        shown = getattr(node, "shown", None)
         if not decl.mutable:
+            if shown:
+                raise CompileError(f"line {node.line}:{node.col}: cannot call '{shown}': "
+                                   f"its '{node.name}' changes it, and it is not mut")
             raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on '{desc}': it is not mut")
         for (fname, _, _), link in zip(target.chain, target.links):
             if not link.mutable:
+                if shown:
+                    raise CompileError(f"line {node.line}:{node.col}: cannot call '{shown}': "
+                                       f"its '{node.name}' changes it, and '{fname}' is not mut")
                 raise CompileError(f"line {node.line}:{node.col}: cannot call '{node.name}' on '{desc}': '{fname}' is not mut")
 
     def visit_init(self, node):
@@ -944,6 +1007,9 @@ class CodeGen:
         self.builder, self.function, self.n_slots, self.current_fn = saved
 
     def visit_call(self, node):
+        sugar = getattr(node, "sugar", None)
+        if sugar is not None:
+            return sugar.accept(self)
         args = [coerce(self.builder, a.accept(self), a.type, p.type_name)
                 for a, p in zip(node.args, node.fn.params)]
         if node.this is not None:
@@ -1038,6 +1104,9 @@ class CodeGen:
         return value
 
     def visit_member_call(self, node):
+        sugar = getattr(node, "sugar", None)
+        if sugar is not None:
+            return sugar.accept(self)
         target = node.target
         if node.temp:
             obj = self.struct_ptr(target, "chain.tmp")

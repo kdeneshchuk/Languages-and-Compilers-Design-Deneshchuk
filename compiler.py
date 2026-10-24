@@ -442,11 +442,14 @@ class PrintNode(StmtNode):
         return visitor.visit_print(self)
 
 class CaptureNode(Node):
-    def __init__(self, line, col, name):
+    def __init__(self, line, col, name, mutable=False):
         super().__init__(line, col)
         self.name = name
+        self.mutable = mutable
 
     def label(self):
+        if self.mutable:
+            return f"Capture {self.name} mut"
         return f"Capture {self.name}"
 
 
@@ -673,7 +676,7 @@ class SemanticChecker:
         for cap in node.captures:
             value = VarNode(cap.line, cap.col, cap.name)
             t = value.accept(self)
-            field = FieldNode(cap.line, cap.col, cap.name, t, False)
+            field = FieldNode(cap.line, cap.col, cap.name, t, cap.mutable)
             field.capture = True
             fields.append(field)
             inits.append(value)
@@ -686,7 +689,8 @@ class SemanticChecker:
         self.visit_member_fn(call)
         self.lambda_ctx.pop()
         self.mark_mutating()
-        decl = DeclNode(node.line, node.col, node.name, st.name, False, inits, node)
+        decl = DeclNode(node.line, node.col, node.name, st.name,
+                        any(cap.mutable for cap in node.captures), inits, node)
         self.visit_decl(decl)
         node.decl, node.struct = decl, st
 
@@ -1788,8 +1792,13 @@ class Parser:
         tok = self.peek()
         if tok is not None and tok.kind != "rbracket":
             while True:
+                mutable = False
+                mod = self.peek()
+                if mod is not None and mod.kind == "keyword" and mod.text == "mut":
+                    self.eat()
+                    mutable = True
                 cap_tok = self.expect("ident", "a variable name to capture")
-                captures.append(CaptureNode(cap_tok.line, cap_tok.col, cap_tok.text))
+                captures.append(CaptureNode(cap_tok.line, cap_tok.col, cap_tok.text, mutable))
                 tok = self.peek()
                 if tok is not None and tok.kind == "comma":
                     self.eat()

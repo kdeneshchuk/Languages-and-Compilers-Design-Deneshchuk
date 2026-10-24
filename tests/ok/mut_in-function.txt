@@ -1,0 +1,13 @@
+fn run := (i32 start) -> i32
+{
+    fn step := [mut start]() -> i32
+    {
+        start := start + 1
+        exit start
+    }
+    i32 a{step()}
+    i32 b{step()}
+    i32 r{a * 10 + b}
+    exit r
+}
+exit run(5)

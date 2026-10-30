@@ -2,6 +2,7 @@ import glob
 import subprocess
 import sys
 
+FLAGS = ["--remove-unused"] if "--remove-unused" in sys.argv else []
 OUT_LL = "/tmp/run_tests_out.ll"
 
 
@@ -15,7 +16,7 @@ def run_output_test(txt_path):
         return None
 
     result = subprocess.run(
-        ["python3", "compiler.py", txt_path, OUT_LL],
+        ["python3", "compiler.py", *FLAGS, txt_path, OUT_LL],
         capture_output=True, text=True
     )
 

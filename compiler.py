@@ -1032,6 +1032,83 @@ class SemanticChecker:
         raise CompileError(f"line {at.line}:{at.col}: cannot {what} of type {want} "
                             f"with a value of type {have}")
 
+def has_call_or_read(n):
+    if isinstance(n, (ReadNode, CallNode, MemberCallNode)):
+        return True
+    return any(has_call_or_read(c) for c in n.children())
+
+
+class UseCounter:
+    def __init__(self):
+        self.reads = {}
+        self.decls = {}
+
+    def read(self, decl):
+        if isinstance(decl, DeclNode):
+            self.reads[id(decl)] = self.reads.get(id(decl), 0) + 1
+
+    def walk(self, n):
+        if isinstance(n, DeclNode):
+            self.decls[id(n)] = n
+            self.reads.setdefault(id(n), 0)
+            if any(has_call_or_read(e) for e in n.inits):
+                self.read(n)
+        elif isinstance(n, AssignNode):
+            if has_call_or_read(n.value):
+                self.read(n.decl)
+        elif isinstance(n, (VarNode, MemberNode)):
+            self.read(n.decl)
+            return
+        elif isinstance(n, LambdaNode):
+            self.walk(n.decl)
+            self.walk(n.body)
+            return
+        sugar = getattr(n, "sugar", None)
+        if sugar is not None:
+            self.walk(sugar)
+            return
+        for c in n.children():
+            self.walk(c)
+
+    def report(self):
+        for d in sorted(self.decls.values(), key=lambda d: (d.line, d.col)):
+            print(f"line {d.line}: {d.name} reads={self.reads[id(d)]}")
+
+
+class Pruner:
+    def __init__(self, dead):
+        self.dead = dead
+        self.removed = 0
+
+    def is_dead(self, s):
+        if isinstance(s, DeclNode):
+            return id(s) in self.dead
+        if isinstance(s, AssignNode):
+            return id(s.decl) in self.dead
+        return False
+
+    def prune(self, n):
+        if isinstance(n, (ProgramNode, BlockNode)):
+            kept = [s for s in n.statements if not self.is_dead(s)]
+            self.removed += len(n.statements) - len(kept)
+            n.statements = kept
+        for c in n.children():
+            self.prune(c)
+
+
+def remove_unused(tree):
+    rounds = 0
+    while True:
+        rounds += 1
+        counter = UseCounter()
+        counter.walk(tree)
+        dead = {i for i, k in counter.reads.items() if k == 0}
+        pruner = Pruner(dead)
+        pruner.prune(tree)
+        if os.environ.get("OPT_TRACE"):
+            print(f"round {rounds}: removed {pruner.removed}", file=sys.stderr)
+        if pruner.removed == 0:
+            return tree
 class CodeGen:
     def __init__(self, builder):
         self.builder = builder
@@ -1992,24 +2069,28 @@ class Parser:
 
         return ProgramNode(1, 1, structs, functions, stmts, exit_node)
 
+MODES = ("--ast", "--ast-checked", "--tokens")
+USAGE = "usage: compiler.py [--remove-unused] [--ast | --ast-checked | --tokens] input.txt [output.ll]"
+
 def main_cli():
-    args = sys.argv[1:]
+    mode, do_remove, args = None, False, []
+    for a in sys.argv[1:]:
+        if a == "--remove-unused":
+            do_remove = True
+        elif a in MODES:
+            if mode is not None:
+                print(USAGE, file=sys.stderr)
+                sys.exit(2)
+            mode = a
+        elif a.startswith("-"):
+            print(f"unknown option {a!r}", file=sys.stderr)
+            print(USAGE, file=sys.stderr)
+            sys.exit(2)
+        else:
+            args.append(a)
 
-    mode = None
-    if args and args[0] in ("--ast", "--tokens", "--ast-checked"):
-        mode = args[0]
-        args = args[1:]
-
-    if mode is None and len(args) != 2:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-    if mode is not None and len(args) != 1:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-
-    if args[0].startswith("-"):
-        print(f"unknown option {args[0]!r}", file=sys.stderr)
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
+    if len(args) != (1 if mode else 2):
+        print(USAGE, file=sys.stderr)
         sys.exit(2)
 
     src_path = args[0]
@@ -2035,9 +2116,13 @@ def main_cli():
             return
         tree = Parser(token_lines).parse_program()
         SemanticChecker().check(tree)
+        if os.environ.get("OPT_DEBUG"):
+            c = UseCounter(); c.walk(tree); c.report()
         if mode == "--ast":
             tree.dump()
             return
+        if do_remove:
+            remove_unused(tree)
         if mode == "--ast-checked":
             tree.dump(checked=True)
             return

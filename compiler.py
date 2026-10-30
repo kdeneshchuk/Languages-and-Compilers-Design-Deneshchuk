@@ -1037,14 +1037,101 @@ def has_call_or_read(n):
         return True
     return any(has_call_or_read(c) for c in n.children())
 
+def callee_of(n):
+    sugar = getattr(n, "sugar", None)
+    if sugar is not None:
+        return getattr(sugar, "fn", None)
+    return getattr(n, "fn", None)
+
+
+def has_effect(n, effects):
+    if isinstance(n, ReadNode):
+        return True
+    if isinstance(n, (CallNode, MemberCallNode)) and callee_of(n) in effects:
+        return True
+    return any(has_effect(c, effects) for c in n.children())
+
+
+def own_effect(n):
+    if isinstance(n, LambdaNode):
+        return False
+    if isinstance(n, (PrintNode, ReadNode, WhileNode)):
+        return True
+    return any(own_effect(c) for c in n.children())
+
+
+def collect_callees(n, out):
+    if isinstance(n, LambdaNode):
+        return
+    if isinstance(n, (CallNode, MemberCallNode)):
+        fn = callee_of(n)
+        if fn is not None:
+            out.add(fn)
+    for c in n.children():
+        collect_callees(c, out)
+
+
+def all_functions(tree):
+    fns = list(tree.functions)
+    for st in tree.structs + tree.lambda_structs:
+        fns += st.fns
+    return fns
+
+
+def reaches_itself(f, callees):
+    seen = set()
+    stack = list(callees[f])
+    while stack:
+        g = stack.pop()
+        if g is f:
+            return True
+        if g in seen or g not in callees:
+            continue
+        seen.add(g)
+        stack.extend(callees[g])
+    return False
+
+
+def effectful_fns(tree):
+    fns = all_functions(tree)
+    callees = {}
+    effects = set()
+    for f in fns:
+        out = set()
+        collect_callees(f.body, out)
+        callees[f] = out
+        if (isinstance(f, MemberFnNode) and f.mutating) or own_effect(f.body):
+            effects.add(f)
+    for f in fns:
+        if reaches_itself(f, callees):
+            effects.add(f)
+    changed = True
+    while changed:
+        changed = False
+        for f in fns:
+            if f not in effects and callees[f] & effects:
+                effects.add(f)
+                changed = True
+    return effects
+
+
+def fn_label(f):
+    owner = getattr(f, "owner", None)
+    return f"{owner}.{f.name}" if owner else f.name
 
 class UseCounter:
-    def __init__(self):
+    def __init__(self, effects=None):
+        self.effects = effects
         self.reads = {}
         self.decls = {}
         self.calls = {}
         self.fn_nodes = {}
         self.live_lambdas = set()
+
+    def observable(self, n):
+        if self.effects is None:
+            return has_call_or_read(n)
+        return has_effect(n, self.effects)
 
     def read(self, decl):
         if isinstance(decl, DeclNode):
@@ -1057,10 +1144,10 @@ class UseCounter:
         if isinstance(n, DeclNode):
             self.decls[id(n)] = n
             self.reads.setdefault(id(n), 0)
-            if any(has_call_or_read(e) for e in n.inits):
+            if any(self.observable(e) for e in n.inits):
                 self.read(n)
         elif isinstance(n, AssignNode):
-            if has_call_or_read(n.value):
+            if self.observable(n.value):
                 self.read(n.decl)
         elif isinstance(n, (VarNode, MemberNode)):
             self.read(n.decl)
@@ -1084,7 +1171,6 @@ class UseCounter:
             print(f"line {d.line}: {d.name} reads={self.reads[id(d)]}")
         for f in sorted(self.fn_nodes.values(), key=lambda f: (f.line, f.col)):
             print(f"line {f.line}: fn {f.name} calls={self.calls[id(f)]}")
-
 
 class Pruner:
     def __init__(self, dead, dead_fns):
@@ -1116,7 +1202,7 @@ def remove_unused(tree):
     rounds = 0
     while True:
         rounds += 1
-        counter = UseCounter()
+        counter = UseCounter(effectful_fns(tree))
         counter.walk(tree)
         dead = {i for i, k in counter.reads.items() if k == 0}
         dead_fns = {id(f) for f in tree.functions if counter.calls.get(id(f), 0) == 0}
@@ -2138,6 +2224,7 @@ def main_cli():
         SemanticChecker().check(tree)
         if os.environ.get("OPT_DEBUG"):
             c = UseCounter(); c.walk(tree); c.report()
+            print("effects:", sorted(fn_label(f) for f in effectful_fns(tree)))
         if mode == "--ast":
             tree.dump()
             return

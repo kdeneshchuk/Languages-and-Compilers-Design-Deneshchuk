@@ -1,0 +1,5 @@
+fn pick := (i32 a, i32 b) -> i32
+{
+    exit a
+}
+exit pick(3, 9)

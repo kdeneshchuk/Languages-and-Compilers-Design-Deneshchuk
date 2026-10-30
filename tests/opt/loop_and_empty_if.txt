@@ -1,0 +1,11 @@
+i32 mut i{0}
+while i != 3
+{
+    i32 t{i}
+    i := i + 1
+}
+if true
+{
+    i32 u{5}
+}
+exit i

@@ -1,0 +1,22 @@
+fn g := (i32 a) -> i32
+{
+    exit a
+}
+fn keep := (i32 k) -> i32
+{
+    fn inner := [k](i32 y) -> i32
+    {
+        i32 r{g(y)}
+        exit r
+    }
+    i32 v{inner(1)}
+    exit v
+}
+i32 base{10}
+fn top := [base](i32 y) -> i32
+{
+    i32 s{base + y}
+    exit s
+}
+print(top(5))
+exit keep(3)

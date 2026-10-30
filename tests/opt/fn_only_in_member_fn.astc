@@ -1,0 +1,17 @@
+Program
+  Struct Holder
+    Member v i32 const
+    MemberFn go -> i32
+      Block
+        Decl r i32 const
+          Call base
+            Var v
+        Exit
+          Var r
+  Fn base i32
+    Param a i32
+    Block
+      Exit
+        Var a
+  Exit
+    Const 0

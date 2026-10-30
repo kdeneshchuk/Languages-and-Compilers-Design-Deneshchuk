@@ -1,0 +1,16 @@
+Program
+  Decl n i32 mut
+    Const 0
+  Decl c bool const
+    Bool true
+  If
+    Var c
+    Block
+      Assign n
+        Const 1
+    Block
+  While
+    Bool false
+    Block
+  Exit
+    Var n

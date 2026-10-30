@@ -1,0 +1,49 @@
+Program
+  Fn g i32
+    Param a i32
+    Block
+      Exit
+        Var a
+  Fn keep i32
+    Param k i32
+    Block
+      Lambda inner -> i32
+        Struct lambda.inner
+          Member k i32 const
+          MemberFn call -> i32
+            Param y i32
+            Block
+              Decl r i32 const
+                Call g
+                  Var y
+              Exit
+                Var r
+        Decl inner lambda.inner const
+          Var k
+      Decl v i32 const
+        CallableCall inner
+          Const 1
+      Exit
+        Var v
+  Decl base i32 const
+    Const 10
+  Lambda top -> i32
+    Struct lambda.top
+      Member base i32 const
+      MemberFn call -> i32
+        Param y i32
+        Block
+          Decl s i32 const
+            BinOp +
+              Var base
+              Var y
+          Exit
+            Var s
+    Decl top lambda.top const
+      Var base
+  Print
+    CallableCall top
+      Const 5
+  Exit
+    Call keep
+      Const 3

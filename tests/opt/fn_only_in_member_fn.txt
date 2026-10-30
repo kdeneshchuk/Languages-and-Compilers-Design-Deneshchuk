@@ -1,0 +1,15 @@
+struct Holder
+{
+    i32 v
+    fn go := () -> i32
+    {
+        i32 r{base(v)}
+        exit r
+    }
+}
+fn base := (i32 a) -> i32
+{
+    exit a
+}
+Holder h{5}
+exit 0

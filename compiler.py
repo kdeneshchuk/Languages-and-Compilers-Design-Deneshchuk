@@ -1042,12 +1042,18 @@ class UseCounter:
     def __init__(self):
         self.reads = {}
         self.decls = {}
+        self.calls = {}
+        self.fn_nodes = {}
+        self.live_lambdas = set()
 
     def read(self, decl):
         if isinstance(decl, DeclNode):
             self.reads[id(decl)] = self.reads.get(id(decl), 0) + 1
 
     def walk(self, n):
+        if isinstance(n, FnNode) and not isinstance(n, MemberFnNode):
+            self.fn_nodes[id(n)] = n
+            self.calls.setdefault(id(n), 0)
         if isinstance(n, DeclNode):
             self.decls[id(n)] = n
             self.reads.setdefault(id(n), 0)
@@ -1060,6 +1066,7 @@ class UseCounter:
             self.read(n.decl)
             return
         elif isinstance(n, LambdaNode):
+            self.live_lambdas.add(id(n.struct))
             self.walk(n.decl)
             self.walk(n.body)
             return
@@ -1067,17 +1074,22 @@ class UseCounter:
         if sugar is not None:
             self.walk(sugar)
             return
+        if isinstance(n, CallNode) and n.this is None:
+            self.calls[id(n.fn)] = self.calls.get(id(n.fn), 0) + 1
         for c in n.children():
             self.walk(c)
 
     def report(self):
         for d in sorted(self.decls.values(), key=lambda d: (d.line, d.col)):
             print(f"line {d.line}: {d.name} reads={self.reads[id(d)]}")
+        for f in sorted(self.fn_nodes.values(), key=lambda f: (f.line, f.col)):
+            print(f"line {f.line}: fn {f.name} calls={self.calls[id(f)]}")
 
 
 class Pruner:
-    def __init__(self, dead):
+    def __init__(self, dead, dead_fns):
         self.dead = dead
+        self.dead_fns = dead_fns
         self.removed = 0
 
     def is_dead(self, s):
@@ -1088,6 +1100,10 @@ class Pruner:
         return False
 
     def prune(self, n):
+        if isinstance(n, ProgramNode):
+            kept = [f for f in n.functions if id(f) not in self.dead_fns]
+            self.removed += len(n.functions) - len(kept)
+            n.functions = kept
         if isinstance(n, (ProgramNode, BlockNode)):
             kept = [s for s in n.statements if not self.is_dead(s)]
             self.removed += len(n.statements) - len(kept)
@@ -1103,12 +1119,16 @@ def remove_unused(tree):
         counter = UseCounter()
         counter.walk(tree)
         dead = {i for i, k in counter.reads.items() if k == 0}
-        pruner = Pruner(dead)
+        dead_fns = {id(f) for f in tree.functions if counter.calls.get(id(f), 0) == 0}
+        pruner = Pruner(dead, dead_fns)
         pruner.prune(tree)
         if os.environ.get("OPT_TRACE"):
             print(f"round {rounds}: removed {pruner.removed}", file=sys.stderr)
         if pruner.removed == 0:
+            tree.lambda_structs = [s for s in tree.lambda_structs if id(s) in counter.live_lambdas]
             return tree
+
+
 class CodeGen:
     def __init__(self, builder):
         self.builder = builder

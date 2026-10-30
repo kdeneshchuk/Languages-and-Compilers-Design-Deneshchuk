@@ -6,8 +6,9 @@ FLAGS = ["--remove-unused"] if "--remove-unused" in sys.argv else []
 OUT_LL = "/tmp/run_tests_out.ll"
 
 
-def run_output_test(txt_path):
-    """Compile, run through lli if it compiled, compare with .expected."""
+def run_output_test(txt_path, flags=None):
+    if flags is None:
+        flags = FLAGS
     exp_path = txt_path[:-4] + ".expected"
     try:
         with open(exp_path) as f:
@@ -16,7 +17,7 @@ def run_output_test(txt_path):
         return None
 
     result = subprocess.run(
-        ["python3", "compiler.py", *FLAGS, txt_path, OUT_LL],
+        ["python3", "compiler.py", *flags, txt_path, OUT_LL],
         capture_output=True, text=True
     )
 
@@ -38,13 +39,26 @@ def run_output_test(txt_path):
 
 
 def run_ast_test(ast_path):
-    """Compare --ast output with the .ast snapshot."""
     txt_path = ast_path[:-4] + ".txt"
     with open(ast_path) as f:
         expected = f.read().strip()
 
     result = subprocess.run(
         ["python3", "compiler.py", "--ast", txt_path],
+        capture_output=True, text=True
+    )
+    actual = result.stdout.strip()
+
+    return actual == expected, actual, expected
+
+
+def run_astc_test(astc_path):
+    txt_path = astc_path[:-5] + ".txt"
+    with open(astc_path) as f:
+        expected = f.read().strip()
+
+    result = subprocess.run(
+        ["python3", "compiler.py", "--remove-unused", "--ast-checked", txt_path],
         capture_output=True, text=True
     )
     actual = result.stdout.strip()
@@ -79,6 +93,16 @@ def main():
 
     for path in sorted(glob.glob("tests/**/*.ast", recursive=True)):
         report(path, *run_ast_test(path), counters)
+
+    for path in sorted(glob.glob("tests/opt/*.txt")):
+        for flags, label in (([], "plain"), (["--remove-unused"], "opt")):
+            outcome = run_output_test(path, flags)
+            if outcome is None:
+                continue
+            report(f"{path} [{label}]", *outcome, counters)
+
+    for path in sorted(glob.glob("tests/opt/*.astc")):
+        report(path, *run_astc_test(path), counters)
 
     print(f"\n{counters['passed']} passed, {counters['failed']} failed")
     sys.exit(1 if counters["failed"] else 0)

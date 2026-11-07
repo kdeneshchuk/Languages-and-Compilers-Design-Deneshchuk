@@ -1,0 +1,14 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+Point mut p{3, 4}
+fn sum := [p]() -> i32
+{
+    i32 r{p.x + p.y}
+    exit r
+}
+p.x := 10
+print(sum())
+exit p.x

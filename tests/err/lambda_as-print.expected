@@ -1,0 +1,1 @@
+compilation error: line 22:7: cannot print 'add_k' (a lambda: its type has no name)

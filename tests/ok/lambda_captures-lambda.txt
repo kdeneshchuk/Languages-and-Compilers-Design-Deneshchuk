@@ -1,0 +1,12 @@
+fn inc := [](i32 v) -> i32
+{
+    i32 r{v + 1}
+    exit r
+}
+fn twice := [inc](i32 v) -> i32
+{
+    i32 a{inc(v)}
+    i32 b{inc(a)}
+    exit b
+}
+exit twice(5)

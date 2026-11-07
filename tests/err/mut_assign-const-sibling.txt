@@ -1,0 +1,8 @@
+i32 base{1}
+i32 n{0}
+fn f := [mut n, base]() -> i32
+{
+    base := 2
+    exit n
+}
+exit f()

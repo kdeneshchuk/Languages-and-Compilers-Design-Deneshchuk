@@ -1,0 +1,22 @@
+fn f1 := (i32 a) -> i32
+{
+    fn g := [a](i32 v) -> i32
+    {
+        i32 r{a + v}
+        exit r
+    }
+    i32 s{g(1)}
+    exit s
+}
+fn f2 := (i32 a) -> i32
+{
+    fn g := [a](i32 v) -> i32
+    {
+        i32 r{a * v}
+        exit r
+    }
+    i32 s{g(2)}
+    exit s
+}
+i32 x{f1(10) + f2(10)}
+exit x

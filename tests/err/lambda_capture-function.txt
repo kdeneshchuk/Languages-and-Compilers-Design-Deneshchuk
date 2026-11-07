@@ -1,0 +1,10 @@
+fn sq := (i32 v) -> i32
+{
+    i32 r{v * v}
+    exit r
+}
+fn f := [sq](i32 v) -> i32
+{
+    exit v
+}
+exit f(1)

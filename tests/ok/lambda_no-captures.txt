@@ -1,0 +1,11 @@
+fn sq := (i32 v) -> i32
+{
+    i32 r{v * v}
+    exit r
+}
+fn dbl := [](i32 v) -> i32
+{
+    i32 r{sq(v) + sq(v)}
+    exit r
+}
+exit dbl(3)

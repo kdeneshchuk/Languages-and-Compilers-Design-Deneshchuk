@@ -1,0 +1,16 @@
+struct Counter
+{
+    i32 mut n
+    fn call := () -> i32
+    {
+        n := n + 1
+        exit n
+    }
+}
+fn bump := (Counter c) -> i32
+{
+    i32 r{c()}
+    exit r
+}
+Counter mut c{0}
+exit bump(c)

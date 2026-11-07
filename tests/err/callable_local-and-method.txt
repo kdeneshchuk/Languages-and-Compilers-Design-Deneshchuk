@@ -1,0 +1,15 @@
+struct S
+{
+    i32 x
+    fn a := () -> i32
+    {
+        exit 1
+    }
+    fn b := () -> i32
+    {
+        i32 a{5}
+        i32 r{a()}
+        exit r
+    }
+}
+exit 0

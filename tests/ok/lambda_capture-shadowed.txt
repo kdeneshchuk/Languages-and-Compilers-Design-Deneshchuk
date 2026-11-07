@@ -1,0 +1,12 @@
+i32 x{1}
+if true
+{
+    i32 x{2}
+    fn f := [x](i32 v) -> i32
+    {
+        i32 r{x + v}
+        exit r
+    }
+    print(f(10))
+}
+exit x

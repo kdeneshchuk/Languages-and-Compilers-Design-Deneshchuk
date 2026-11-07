@@ -1,0 +1,16 @@
+struct Box
+{
+    i32 w
+    fn make := (i32 d) -> i32
+    {
+        fn add := [w, d](i32 v) -> i32
+        {
+            i32 r{w + d + v}
+            exit r
+        }
+        i32 s{add(1)}
+        exit s
+    }
+}
+Box b{10}
+exit b.make(5)

@@ -1,0 +1,19 @@
+struct Scale
+{
+    i32 k
+    fn call := (i32 v) -> i32
+    {
+        i32 r{v * k}
+        exit r
+    }
+}
+struct Holder
+{
+    Scale s
+}
+fn id := [](i32 v) -> i32
+{
+    exit v
+}
+Holder h{id}
+exit 0

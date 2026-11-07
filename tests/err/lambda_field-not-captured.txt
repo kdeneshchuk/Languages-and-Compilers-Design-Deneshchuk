@@ -1,0 +1,14 @@
+struct Box
+{
+    i32 w
+    fn make := () -> i32
+    {
+        fn g := [](i32 v) -> i32
+        {
+            i32 r{w + v}
+            exit r
+        }
+        exit 0
+    }
+}
+exit 0

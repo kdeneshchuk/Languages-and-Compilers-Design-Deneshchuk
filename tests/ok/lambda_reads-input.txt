@@ -1,0 +1,8 @@
+i32 n{read()}
+fn add_n := [n](i32 v) -> i32
+{
+    i32 r{n + v}
+    exit r
+}
+print(add_n(read()))
+exit 0

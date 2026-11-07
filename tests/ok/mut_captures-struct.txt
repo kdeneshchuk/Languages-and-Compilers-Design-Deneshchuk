@@ -1,0 +1,13 @@
+struct Acc
+{
+    i32 mut total
+}
+Acc mut a{0}
+fn add := [mut a](i32 v) -> i32
+{
+    a.total := a.total + v
+    exit a.total
+}
+print(add(5))
+print(add(6))
+exit a.total

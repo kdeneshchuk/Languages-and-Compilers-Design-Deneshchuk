@@ -1,0 +1,17 @@
+fn run := (i32 n) -> i32
+{
+    i32 mut i{0}
+    i32 mut sum{0}
+    while i != n
+    {
+        fn f := [i](i32 v) -> i32
+        {
+            i32 r{i + v}
+            exit r
+        }
+        sum := sum + f(10)
+        i := i + 1
+    }
+    exit sum
+}
+exit run(3)

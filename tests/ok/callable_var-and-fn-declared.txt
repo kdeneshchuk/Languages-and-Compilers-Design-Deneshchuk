@@ -1,0 +1,8 @@
+fn twice := (i32 v) -> i32
+{
+    i32 r{v + v}
+    exit r
+}
+i32 twice{5}
+print(twice)
+exit 0

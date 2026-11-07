@@ -1,0 +1,23 @@
+struct Scale
+{
+    i32 k
+    fn call := (i32 v) -> i32
+    {
+        i32 r{v * k}
+        exit r
+    }
+}
+struct Shape
+{
+    Scale scale
+    i32 side
+    fn grown := () -> i32
+    {
+        i32 g{scale(side)}
+        exit g
+    }
+}
+Shape s{{2}, 5}
+print(s.scale(7))
+print(s.grown())
+exit 0

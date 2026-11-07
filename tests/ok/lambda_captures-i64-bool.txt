@@ -1,0 +1,13 @@
+i64 big{3000000000}
+bool flag{true}
+fn f := [big, flag](i32 v) -> i64
+{
+    i64 r{big + v}
+    if flag
+    {
+        exit r
+    }
+    exit 0
+}
+print(f(5))
+exit 0

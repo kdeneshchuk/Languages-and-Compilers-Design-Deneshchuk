@@ -1,0 +1,20 @@
+struct Box
+{
+    i32 v
+    fn g := () -> i32
+    {
+        exit v
+    }
+    fn h := () -> i32
+    {
+        i32 r{g()}
+        exit r
+    }
+}
+fn g := (i32 a) -> i32
+{
+    print(99)
+    exit a
+}
+Box b{7}
+exit b.h()

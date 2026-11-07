@@ -1,0 +1,15 @@
+Program
+  Fn bump i32
+    Param a i32
+    Block
+      Print
+        Var a
+      Exit
+        Var a
+  Decl y i32 mut
+    Const 0
+  Assign y
+    Call bump
+      Const 4
+  Exit
+    Const 0

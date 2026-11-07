@@ -1,0 +1,11 @@
+Program
+  Fn pick i32
+    Param a i32
+    Param b i32
+    Block
+      Exit
+        Var a
+  Exit
+    Call pick
+      Const 3
+      Const 9

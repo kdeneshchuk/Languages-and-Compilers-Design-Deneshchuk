@@ -1,0 +1,19 @@
+Program
+  Fn g i32
+    Param a i32
+    Block
+      Exit
+        Var a
+  Lambda spare -> i32
+    Struct lambda.spare
+      MemberFn call -> i32
+        Param y i32
+        Block
+          Decl r i32 const
+            Call g
+              Var y
+          Exit
+            Var r
+    Decl spare lambda.spare const
+  Exit
+    Const 0

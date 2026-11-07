@@ -1,0 +1,14 @@
+i32 k{10}
+fn noisy := [k](i32 y) -> i32
+{
+    print(y)
+    exit y
+}
+fn calm := [k](i32 y) -> i32
+{
+    i32 r{k + y}
+    exit r
+}
+i32 a{noisy(1)}
+i32 b{calm(2)}
+exit 0

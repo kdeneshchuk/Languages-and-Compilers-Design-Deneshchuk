@@ -1,0 +1,9 @@
+Program
+  Struct Point
+    Member x i32 const
+    Member y i32 const
+  Struct Circle
+    Member center Point const
+    Member radius i32 const
+  Exit
+    Const 0

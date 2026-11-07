@@ -1,0 +1,15 @@
+i32 mut n{0}
+bool c{true}
+if c
+{
+    n := 1
+}
+else
+{
+    i32 z{2}
+}
+while false
+{
+    i32 t{3}
+}
+exit n

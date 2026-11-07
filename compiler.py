@@ -1032,6 +1032,189 @@ class SemanticChecker:
         raise CompileError(f"line {at.line}:{at.col}: cannot {what} of type {want} "
                             f"with a value of type {have}")
 
+def has_call_or_read(n):
+    if isinstance(n, (ReadNode, CallNode, MemberCallNode)):
+        return True
+    return any(has_call_or_read(c) for c in n.children())
+
+def callee_of(n):
+    sugar = getattr(n, "sugar", None)
+    if sugar is not None:
+        return getattr(sugar, "fn", None)
+    return getattr(n, "fn", None)
+
+
+def has_effect(n, effects):
+    if isinstance(n, ReadNode):
+        return True
+    if isinstance(n, (CallNode, MemberCallNode)) and callee_of(n) in effects:
+        return True
+    return any(has_effect(c, effects) for c in n.children())
+
+
+def own_effect(n):
+    if isinstance(n, LambdaNode):
+        return False
+    if isinstance(n, (PrintNode, ReadNode, WhileNode)):
+        return True
+    return any(own_effect(c) for c in n.children())
+
+
+def collect_callees(n, out):
+    if isinstance(n, LambdaNode):
+        return
+    if isinstance(n, (CallNode, MemberCallNode)):
+        fn = callee_of(n)
+        if fn is not None:
+            out.add(fn)
+    for c in n.children():
+        collect_callees(c, out)
+
+
+def all_functions(tree):
+    fns = list(tree.functions)
+    for st in tree.structs + tree.lambda_structs:
+        fns += st.fns
+    return fns
+
+
+def reaches_itself(f, callees):
+    seen = set()
+    stack = list(callees[f])
+    while stack:
+        g = stack.pop()
+        if g is f:
+            return True
+        if g in seen or g not in callees:
+            continue
+        seen.add(g)
+        stack.extend(callees[g])
+    return False
+
+
+def effectful_fns(tree):
+    fns = all_functions(tree)
+    callees = {}
+    effects = set()
+    for f in fns:
+        out = set()
+        collect_callees(f.body, out)
+        callees[f] = out
+        if (isinstance(f, MemberFnNode) and f.mutating) or own_effect(f.body):
+            effects.add(f)
+    for f in fns:
+        if reaches_itself(f, callees):
+            effects.add(f)
+    changed = True
+    while changed:
+        changed = False
+        for f in fns:
+            if f not in effects and callees[f] & effects:
+                effects.add(f)
+                changed = True
+    return effects
+
+
+def fn_label(f):
+    owner = getattr(f, "owner", None)
+    return f"{owner}.{f.name}" if owner else f.name
+
+class UseCounter:
+    def __init__(self, effects=None):
+        self.effects = effects
+        self.reads = {}
+        self.decls = {}
+        self.calls = {}
+        self.fn_nodes = {}
+        self.live_lambdas = set()
+
+    def observable(self, n):
+        if self.effects is None:
+            return has_call_or_read(n)
+        return has_effect(n, self.effects)
+
+    def read(self, decl):
+        if isinstance(decl, DeclNode):
+            self.reads[id(decl)] = self.reads.get(id(decl), 0) + 1
+
+    def walk(self, n):
+        if isinstance(n, FnNode) and not isinstance(n, MemberFnNode):
+            self.fn_nodes[id(n)] = n
+            self.calls.setdefault(id(n), 0)
+        if isinstance(n, DeclNode):
+            self.decls[id(n)] = n
+            self.reads.setdefault(id(n), 0)
+            if any(self.observable(e) for e in n.inits):
+                self.read(n)
+        elif isinstance(n, AssignNode):
+            if self.observable(n.value):
+                self.read(n.decl)
+        elif isinstance(n, (VarNode, MemberNode)):
+            self.read(n.decl)
+            return
+        elif isinstance(n, LambdaNode):
+            self.live_lambdas.add(id(n.struct))
+            self.walk(n.decl)
+            self.walk(n.body)
+            return
+        sugar = getattr(n, "sugar", None)
+        if sugar is not None:
+            self.walk(sugar)
+            return
+        if isinstance(n, CallNode) and n.this is None:
+            self.calls[id(n.fn)] = self.calls.get(id(n.fn), 0) + 1
+        for c in n.children():
+            self.walk(c)
+
+    def report(self):
+        for d in sorted(self.decls.values(), key=lambda d: (d.line, d.col)):
+            print(f"line {d.line}: {d.name} reads={self.reads[id(d)]}")
+        for f in sorted(self.fn_nodes.values(), key=lambda f: (f.line, f.col)):
+            print(f"line {f.line}: fn {f.name} calls={self.calls[id(f)]}")
+
+class Pruner:
+    def __init__(self, dead, dead_fns):
+        self.dead = dead
+        self.dead_fns = dead_fns
+        self.removed = 0
+
+    def is_dead(self, s):
+        if isinstance(s, DeclNode):
+            return id(s) in self.dead
+        if isinstance(s, AssignNode):
+            return id(s.decl) in self.dead
+        return False
+
+    def prune(self, n):
+        if isinstance(n, ProgramNode):
+            kept = [f for f in n.functions if id(f) not in self.dead_fns]
+            self.removed += len(n.functions) - len(kept)
+            n.functions = kept
+        if isinstance(n, (ProgramNode, BlockNode)):
+            kept = [s for s in n.statements if not self.is_dead(s)]
+            self.removed += len(n.statements) - len(kept)
+            n.statements = kept
+        for c in n.children():
+            self.prune(c)
+
+
+def remove_unused(tree):
+    rounds = 0
+    while True:
+        rounds += 1
+        counter = UseCounter(effectful_fns(tree))
+        counter.walk(tree)
+        dead = {i for i, k in counter.reads.items() if k == 0}
+        dead_fns = {id(f) for f in tree.functions if counter.calls.get(id(f), 0) == 0}
+        pruner = Pruner(dead, dead_fns)
+        pruner.prune(tree)
+        if os.environ.get("OPT_TRACE"):
+            print(f"round {rounds}: removed {pruner.removed}", file=sys.stderr)
+        if pruner.removed == 0:
+            tree.lambda_structs = [s for s in tree.lambda_structs if id(s) in counter.live_lambdas]
+            return tree
+
+
 class CodeGen:
     def __init__(self, builder):
         self.builder = builder
@@ -1992,24 +2175,28 @@ class Parser:
 
         return ProgramNode(1, 1, structs, functions, stmts, exit_node)
 
+MODES = ("--ast", "--ast-checked", "--tokens")
+USAGE = "usage: compiler.py [--remove-unused] [--ast | --ast-checked | --tokens] input.txt [output.ll]"
+
 def main_cli():
-    args = sys.argv[1:]
+    mode, do_remove, args = None, False, []
+    for a in sys.argv[1:]:
+        if a == "--remove-unused":
+            do_remove = True
+        elif a in MODES:
+            if mode is not None:
+                print(USAGE, file=sys.stderr)
+                sys.exit(2)
+            mode = a
+        elif a.startswith("-"):
+            print(f"unknown option {a!r}", file=sys.stderr)
+            print(USAGE, file=sys.stderr)
+            sys.exit(2)
+        else:
+            args.append(a)
 
-    mode = None
-    if args and args[0] in ("--ast", "--tokens", "--ast-checked"):
-        mode = args[0]
-        args = args[1:]
-
-    if mode is None and len(args) != 2:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-    if mode is not None and len(args) != 1:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-
-    if args[0].startswith("-"):
-        print(f"unknown option {args[0]!r}", file=sys.stderr)
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
+    if len(args) != (1 if mode else 2):
+        print(USAGE, file=sys.stderr)
         sys.exit(2)
 
     src_path = args[0]
@@ -2035,9 +2222,14 @@ def main_cli():
             return
         tree = Parser(token_lines).parse_program()
         SemanticChecker().check(tree)
+        if os.environ.get("OPT_DEBUG"):
+            c = UseCounter(); c.walk(tree); c.report()
+            print("effects:", sorted(fn_label(f) for f in effectful_fns(tree)))
         if mode == "--ast":
             tree.dump()
             return
+        if do_remove:
+            remove_unused(tree)
         if mode == "--ast-checked":
             tree.dump(checked=True)
             return

@@ -13,13 +13,16 @@ and compiled to LLVM IR via llvmlite by a walk over that tree. The
 initialiser and the right side of `:=` accept a chain of `+`, `-`, `*`
 with real precedence and left associativity, optionally followed by one
 `==`/`!=` comparison. An `i32` value widens into `i64` where needed
-(`sext`); nothing else converts.
+(`sext`); nothing else converts. An optional pass, `--remove-unused`,
+removes unused variables and functions (see Optimizations).
 
 ## Run the compiler
     python3 compiler.py input.txt output.ll      # compile
     python3 compiler.py --ast input.txt           # print the AST, write nothing
     python3 compiler.py --ast-checked input.txt   # print the AST after the semantic pass, write nothing
     python3 compiler.py --tokens input.txt         # print the token list, write nothing
+    python3 compiler.py --remove-unused input.txt output.ll   # compile the tree after the unused-removal pass
+    python3 compiler.py --remove-unused --ast-checked input.txt   # print the tree after the pass, write nothing
     lli output.ll                                  # quick run, no linking
     lli output.ll < input.in                       # a program that calls read()
     opt -passes=mem2reg -S output.ll               # same IR, allocas promoted to registers (phi)
@@ -30,7 +33,8 @@ with real precedence and left associativity, optionally followed by one
 is rejected in that mode too. `--ast` prints the tree the parser built;
 `--ast-checked` prints it after the semantic pass, where a lambda has become
 its struct, its `call` and its variable, and a call of an object is a
-`CallableCall`.
+`CallableCall`. `--remove-unused` may stand anywhere on the command line;
+it does not change `--ast`, and `--ast-checked` then shows the tree after the pass.
 
 ## Language
     i32 x{5}                # const declaration, initialiser mandatory
@@ -450,8 +454,78 @@ with a format like `", y: %d"` (a struct field goes the same way one
 level down), then `printf("}")`. A call result is stored into an
 `alloca` first.
 
+## Optimizations
+
+    python3 compiler.py --remove-unused input.txt output.ll
+    python3 compiler.py --remove-unused --ast-checked input.txt
+
+`--remove-unused` runs on the tree after the semantic pass has accepted the
+program and before code generation, so it never sees an invalid program. The
+flag may stand anywhere on the command line; `--ast` still prints the parse
+tree and `--ast-checked` prints the tree after the pass.
+
+**Variables.** Reads are counted per declaration node (`id(decl)`), not per
+name, so shadowing works: the outer `x` can go while the inner `x` stays. A
+read is a use in an initialiser, the right side of `:=`, a condition, an
+argument, `print`, `exit`, the start of a field chain, the object of a member
+call, a capture list or a call of a callable object. The target of `:=` is
+not a read. A declaration with zero reads is removed together with every
+assignment to it. Parameters, fields and lambdas are never removed.
+
+**Calls and `read()`.** A declaration is kept when its initialiser contains
+`read()` or a call of a function that has an effect, and so is an assignment
+with such a value, together with the declaration of its variable. A function
+has an effect if its body contains `print`, `read()` or `while`, if it is a
+mutating member function, if it can reach itself through calls (it may not
+return), or if it calls a function with an effect. Declaring a lambda does not run
+its body, so a `print` inside it gives no effect to the function that declares
+it. The set is computed as a
+fixpoint at the start of every round: the first rules mark functions, then
+callers are added until nothing changes. A call without an effect, such as
+`i32 a{square(3)}`, does not keep its declaration.
+
+**Functions.** Calls of every global function are counted wherever they stand:
+statements, other functions, member functions and lambda bodies. A global
+function with no calls is removed with its whole body. Member functions and
+lambdas stay. The lambda structs of removed functions are dropped from
+`lambda_structs`, otherwise code generation would still emit their `call`.
+
+**Iteration.** Each round counts again on the smaller tree. The loop stops
+when a round removes nothing. It ends because every round except the last
+removes at least one of finitely many declarations or functions.
+
+**Limits.** Counting cannot see a cycle: two functions that call only each
+other, or a recursive function nobody else calls, stay. A variable that only
+feeds itself (`k := k + 1` with nobody else reading `k`) stays, because the
+right side reads it. Unused lambdas, struct types and member functions are
+not removed. The first two limits are pinned by tests (`mutual_recursion_stays`
+and `self_feeding` in `tests/opt`).
+
+**Who frees a removed subtree.** The compiler is written in Python (CPython).
+CPython frees an object by reference counting: when the last reference goes
+away, the object is freed at once, and a separate cycle collector frees
+objects that only point at each other. The pass unlinks a subtree by building
+the `statements` or `functions` list again without it, so no list points at
+the node any more. The nodes keep no pointer back to their parent, so nothing
+else points at it either and the whole subtree, body included, is freed on the
+spot. A parent pointer would change that: every child would point at its
+parent and the parent at its child, so after the unlink the counts would stay
+above zero and the subtree would wait for the cycle collector. One such cycle
+does exist: the semantic pass builds the closure variable of a lambda with
+the `LambdaNode` itself in its `lbrace` field, and sets `lambda.decl` to that
+variable. Measured with `weakref.ref` on one removed node of each kind, with
+the automatic collector disabled (`measure_free.py`):
+
+    variable y: freed right after the pass: True; after gc.collect(): True
+    function unused: freed right after the pass: True; after gc.collect(): True
+    lambda inner: freed right after the pass: False; after gc.collect(): True
+
+This is the memory of the compiler, not of the compiled program: the language
+has no heap yet, so nothing is freed in the binary.
+
 ## Run tests
-    python3 run_tests.py
+    python3 run_tests.py                   # every test as it is
+    python3 run_tests.py --remove-unused   # tests/ok and tests/err through the pass
 
 Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
 its `.expected`: compiles, runs the result through `lli` when compilation
@@ -462,6 +536,14 @@ standard output is compared: the lines of `print` and the exit line. Every
 `.ast` snapshot is compared with the output of `--ast` for the program
 next to it. Prints a PASS/FAIL line per test and a summary; exits non-zero
 if anything failed.
+
+`tests/opt` holds programs for the pass. Each `NAME.txt` has `NAME.expected`
+(the output) and `NAME.astc` (the tree printed by `--remove-unused --ast-checked`).
+The script runs every program of `tests/opt` twice, without the flag and with it,
+against the same `.expected`: an optimization must not change what a program
+prints. It also compares each `.astc`. With `--remove-unused` every program of
+`tests/ok` and `tests/err` goes through the pass too: the output and every error
+message must stay the same.
 
 Valid programs write output.ll and produce no stderr. Invalid programs
 print `compilation error: line L:C: ...` to stderr and exit non-zero,

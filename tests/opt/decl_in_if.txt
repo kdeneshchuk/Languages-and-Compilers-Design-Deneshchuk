@@ -1,0 +1,8 @@
+i32 mut r{0}
+if true
+{
+    i32 a{5}
+    i32 b{a}
+    r := 7
+}
+exit r

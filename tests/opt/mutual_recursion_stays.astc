@@ -1,0 +1,33 @@
+Program
+  Fn even bool
+    Param n i32
+    Block
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Exit
+            Bool true
+      Exit
+        Call odd
+          BinOp -
+            Var n
+            Const 1
+  Fn odd bool
+    Param n i32
+    Block
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Exit
+            Bool false
+      Exit
+        Call even
+          BinOp -
+            Var n
+            Const 1
+  Exit
+    Const 0

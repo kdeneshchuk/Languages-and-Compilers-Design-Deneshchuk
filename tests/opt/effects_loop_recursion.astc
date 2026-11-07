@@ -1,0 +1,42 @@
+Program
+  Fn spin i32
+    Param a i32
+    Block
+      Decl i i32 mut
+        Var a
+      While
+        BinOp !=
+          Var i
+          Const 0
+        Block
+          Assign i
+            BinOp -
+              Var i
+              Const 1
+      Exit
+        Var i
+  Fn down i32
+    Param n i32
+    Block
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Exit
+            Const 0
+      Decl r i32 const
+        Call down
+          BinOp -
+            Var n
+            Const 1
+      Exit
+        Var r
+  Decl s i32 const
+    Call spin
+      Const 3
+  Decl d i32 const
+    Call down
+      Const 3
+  Exit
+    Const 0

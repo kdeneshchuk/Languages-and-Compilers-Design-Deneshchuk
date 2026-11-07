@@ -1,0 +1,6 @@
+struct S
+{
+    i32 x
+    extern fn f := () -> i32
+}
+exit 0

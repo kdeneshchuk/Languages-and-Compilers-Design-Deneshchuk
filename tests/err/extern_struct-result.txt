@@ -1,0 +1,6 @@
+struct Point
+{
+    i32 x
+}
+extern fn origin := () -> Point
+exit 0

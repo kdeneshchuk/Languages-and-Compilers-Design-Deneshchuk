@@ -7,6 +7,7 @@ I32, I64, I1, I8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
 
 LLVM_TYPES = {"i32": I32, "i64": I64, "bool": I1}
 BUILTIN = ("i32", "i64", "bool")
+MODULE_NAMES = ("main", "printf", "scanf", "fmt", "fmt_bool", "true_str", "false_str")
 
 def coerce(builder, value, have, want):
     if have == "i32" and want == "i64":
@@ -21,6 +22,7 @@ KEYWORDS = {
     "struct": "keyword",
     "fn": "keyword",
     "read": "keyword", "print": "keyword",
+    "extern": "keyword",
 }
 
 def is_alpha(b):
@@ -128,6 +130,16 @@ class MemberFnNode(FnNode):
 
     def accept(self, visitor):
         return visitor.visit_member_fn(self)
+
+class ExternFnNode(FnNode):
+    def label(self):
+        return f"Extern {self.name} -> {self.ret_type}"
+
+    def children(self):
+        return self.params
+
+    def accept(self, visitor):
+        return visitor.visit_extern(self)
 
 class ProgramNode(Node):
     def __init__(self, line, col, structs, functions, statements, exit_node):
@@ -627,13 +639,28 @@ class SemanticChecker:
             self.check_known_type(p.type_name, p)
         self.check_known_type(fn.ret_type, fn)
 
+    def check_extern_types(self, fn):
+        for p in fn.params:
+            if p.type_name not in ("i32", "i64"):
+                raise CompileError(f"line {p.line}:{p.col}: parameter '{p.name}' of extern "
+                                   f"function '{fn.name}' has type '{p.type_name}': "
+                                   f"only i32 and i64 cross into C")
+        if fn.ret_type not in ("i32", "i64"):
+            raise CompileError(f"line {fn.line}:{fn.col}: extern function '{fn.name}' returns "
+                               f"'{fn.ret_type}': only i32 and i64 cross into C")
+
     def collect_signatures(self, functions):
         for fn in functions:
+            if isinstance(fn, ExternFnNode) and (fn.name in MODULE_NAMES or fn.name in self.ir_names):
+                raise CompileError(f"line {fn.line}:{fn.col}: '{fn.name}' is a name the "
+                                   f"compiler already uses in the module")
             if fn.name in self.structs:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' has the name of a struct")
             if fn.name in self.fns:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' is already declared")
             self.check_signature(fn)
+            if isinstance(fn, ExternFnNode):
+                self.check_extern_types(fn)
             self.fns[fn.name] = fn
 
     def visit_fn(self, node):
@@ -650,6 +677,9 @@ class SemanticChecker:
         self.current_struct = self.structs[node.owner]
         node.body.accept(self)
         self.scopes, self.current_fn, self.current_struct = saved
+
+    def visit_extern(self, node):
+        pass
 
     def fresh_lambda_name(self, name):
         base = f"lambda.{name}"
@@ -1097,6 +1127,10 @@ def effectful_fns(tree):
     callees = {}
     effects = set()
     for f in fns:
+        if isinstance(f, ExternFnNode):
+            callees[f] = set()
+            effects.add(f)
+            continue
         out = set()
         collect_callees(f.body, out)
         callees[f] = out
@@ -1300,7 +1334,8 @@ class CodeGen:
         for fn in functions:
             fnty = ir.FunctionType(self.ir_type(fn.ret_type),
                                    [self.ir_type(p.type_name) for p in fn.params])
-            self.fns[fn.name] = ir.Function(self.module, fnty, name=f"fn.{fn.name}")
+            ir_name = fn.name if isinstance(fn, ExternFnNode) else f"fn.{fn.name}"
+            self.fns[fn.name] = ir.Function(self.module, fnty, name=ir_name)
 
     def declare_member_fns(self, structs):
         for st in structs:
@@ -1322,6 +1357,9 @@ class CodeGen:
             self.builder.store(arg, p.ptr)
         node.body.accept(self)
         self.builder, self.function, self.n_slots, self.current_fn = saved
+
+    def visit_extern(self, node):
+        pass
 
     def visit_member_fn(self, node):
         saved = (self.builder, self.function, self.n_slots, self.current_fn)
@@ -1921,6 +1959,8 @@ class Parser:
                 self.eat()
                 self.expect_eol()
                 break
+            if first.kind == "keyword" and first.text == "extern":
+                self.error("'extern' is not allowed here")
             if first.kind == "keyword" and first.text == "fn":
                 if not fields:
                     self.error("a member function cannot come before the first field")
@@ -1951,6 +1991,25 @@ class Parser:
                     break
         self.expect("rparen", "')'")
         return params
+
+    def parse_extern(self):
+        self.eat()
+        fn_tok = self.peek()
+        if fn_tok is None or not (fn_tok.kind == "keyword" and fn_tok.text == "fn"):
+            self.error("expected 'fn' after 'extern'")
+        self.eat()
+        name_tok = self.expect("ident", "a function name")
+        self.expect_op(":=")
+        params = self.parse_params()
+        self.expect("arrow", "'->'")
+        ret_tok = self.parse_type()
+        self.expect_eol()
+        nxt = self.peek_line()
+        if nxt is not None and nxt[0].kind == "lbrace":
+            self.error(f"extern function '{name_tok.text}' has no body: "
+                       f"it is defined in C", at=nxt[0])
+        return ExternFnNode(name_tok.line, name_tok.col, name_tok.text,
+                            params, ret_tok.text, None)
 
     def parse_fn(self, node_class=FnNode):
         fn_tok = self.eat()
@@ -2121,6 +2180,8 @@ class Parser:
 
     def parse_statement(self):
         tok = self.peek()
+        if tok.kind == "keyword" and tok.text == "extern":
+            self.error("'extern' is not allowed here")
         if tok.kind == "keyword" and tok.text == "fn" and self.is_lambda_start():
             return self.parse_lambda()
         if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
@@ -2162,6 +2223,10 @@ class Parser:
                     if stmts:
                         self.error("function declarations come before the statements")
                     functions.append(self.parse_fn())
+            elif first.kind == "keyword" and first.text == "extern":
+                if stmts:
+                    self.error("function declarations come before the statements")
+                functions.append(self.parse_extern())
             elif first.kind == "keyword" and first.text == "exit":
                 exit_node = self.parse_exit()
             else:

@@ -5,7 +5,7 @@ A compiler for a small language with `i32`/`i64`/`bool` variable
 declarations (const by default, `mut` for mutable), assignments, `exit`,
 comparisons, `!`, `if`/`else` and `while` with blocks, structs with
 field access and member functions, functions with calls, callable objects, lambdas with captures, and
-the built-ins `read()` and `print`. Source is tokenized by a hand-written
+the built-ins `read()` and `print`, and `extern` declarations of C functions. Source is tokenized by a hand-written
 lexer, parsed by a hand-written recursive-descent parser into an AST,
 checked by a `SemanticChecker` visitor that resolves names, scopes,
 fields, member functions and types before any LLVM instruction exists,
@@ -348,12 +348,42 @@ parameter. A call alone is not a statement. No function or struct may be
 declared inside a function body, and a function cannot share a name with
 a struct.
 
+## Calling C (extern)
+    extern fn abs := (i32 v) -> i32
+    extern fn isqrt := (i32 v) -> i32
+
+An `extern` line declares a function that is defined in C: it has a signature
+and no body. It stands among the `fn` declarations, after the structs and
+before the statements, and the function is called like any global function:
+from the statements, from functions and from member functions. In the IR it is
+a declaration under its own C name, `declare i32 @"abs"(i32 %".1")`, not under
+`fn.abs`. The linker finds the body in libc (`abs`) or in a C file given to
+clang together with the object:
+
+    clang -fPIE geometry.o tests/ffi/geometry.c -o geometry
+
+The linker matches names, never types, so a declaration is a promise nobody
+checks, and a wrong one prints garbage or crashes at run time. The checker
+therefore accepts only the promises the generator can keep: `i32` (C `int`) and
+`i64` (C `long long`) as parameters and as the result. A `bool` means different
+things on different machines (`zeroext i1` on x86-64, a plain `i1` on Linux
+aarch64), and C passes a struct as one 64-bit integer where our functions pass
+it field by field. The checker reports a parameter or a result of another type,
+a name the module already uses (`main`, `printf`, `scanf`, the global constants
+of the module and the IR name of a member function), a name declared twice, a
+block after the `extern` line, an `extern` inside a block or a struct, and an
+`extern` after the statements (the last one with the message of `fn`).
+
+With `--remove-unused` an `extern` function nobody calls is removed like any
+global function, and a call of one is kept, even when its result is not read:
+the compiler cannot see the C body, and the body may print.
+
 ## Program order
-    program ::= { struct } { fn } { statement } exit
+    program ::= { struct } { fn | extern_fn } { statement } exit
 
 Structs come first, then functions, then statements, then the final
 `exit`; nothing follows it. A struct after a function or a statement, or
-a function after a statement, is an error at that line. A lambda is a
+a function after a statement, is an error at that line; an `extern` declaration counts as a function here. A lambda is a
 statement, not a function: it stands among the statements and inside any
 block, so it never breaks this order. `exit` takes one
 operand (a constant, a variable, a field chain, a call, `read()` or `!`
@@ -409,7 +439,7 @@ one value of the struct type, built from `undef` field by field with
 `insertvalue` and stored with one `store`.
 
 Each function of the program becomes a function of the module named
-`fn.<name>`, so a function called `main` or `printf` does not clash with
+`fn.<name>` (an `extern` function keeps its own name), so a function called `main` or `printf` does not clash with
 the runtime. All functions are declared before any body is generated.
 Parameters are stored into slots in the function's own entry block;
 `exit` inside a function becomes `ret`, a call becomes `call`. The
@@ -443,7 +473,7 @@ generated once, as a function, not where the lambda stands. A call passes
 the address of the closure variable, then the arguments: `call i32
 @"lambda.add_k_call"(%"lambda.add_k"* %"add_k", i32 5)`.
 
-**read and print.** `printf` and `scanf` are declared once in the module.
+**read and print.** `printf` is declared once in the module, and `scanf` the first time a program calls `read()`.
 `read()` stores 0 into an `alloca` in the entry block, calls `scanf` with
 the global constant `"%d"` and loads the slot, so an empty input gives 0.
 `print` uses global constants for the formats and texts: `"%d\n"` for
@@ -478,7 +508,7 @@ assignment to it. Parameters, fields and lambdas are never removed.
 with such a value, together with the declaration of its variable. A function
 has an effect if its body contains `print`, `read()` or `while`, if it is a
 mutating member function, if it can reach itself through calls (it may not
-return), or if it calls a function with an effect. Declaring a lambda does not run
+return), if it calls a function with an effect, or if it is an `extern` function (its C body is not visible). Declaring a lambda does not run
 its body, so a `print` inside it gives no effect to the function that declares
 it. The set is computed as a
 fixpoint at the start of every round: the first rules mark functions, then
@@ -526,7 +556,7 @@ has no heap yet, so nothing is freed in the binary.
 
 ## Run tests
     python3 run_tests.py                   # every test as it is
-    python3 run_tests.py --remove-unused   # tests/ok, tests/err and the tests/io binaries through the pass
+    python3 run_tests.py --remove-unused   # tests/ok, tests/err and the tests/io and tests/ffi binaries through the pass
 
 Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
 its `.expected`: compiles, runs the result through `lli` when compilation
@@ -562,3 +592,8 @@ results. Every session has as many numbers as the program has `read()` calls:
 a missing number makes `scanf` write nothing, and `read()` returns 0. With
 `--remove-unused` the binaries are built from the optimized tree. The binaries
 and their `.ll` and `.o` files go to `/tmp`, not to the repository.
+
+`tests/ffi` works the same way, and a program there may have a C file next to
+it: `tests/ffi/NAME.c` is given to `clang` together with the object, so the
+linker finds the C functions the program declares with `extern`. Without the C
+file the build fails with an undefined reference, and the script reports it.

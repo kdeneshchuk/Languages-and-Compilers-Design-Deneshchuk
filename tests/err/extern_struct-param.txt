@@ -1,0 +1,6 @@
+struct Point
+{
+    i32 x
+}
+extern fn norm := (Point p) -> i32
+exit 0

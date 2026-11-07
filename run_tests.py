@@ -77,13 +77,13 @@ def report(path, ok, actual, expected, counters):
         print(f"      expected: {expected!r}")
         print(f"      actual:   {actual!r}")
 
-def build_binary(txt_path, flags, exe_path):
+def build_binary(txt_path, flags, exe_path, c_files=()):
     ll = exe_path + ".ll"
     obj = exe_path + ".o"
     steps = [
         ["python3", "compiler.py", *flags, txt_path, ll],
         ["llc", "-filetype=obj", "-relocation-model=pic", ll, "-o", obj],
-        ["clang", "-fPIE", obj, "-o", exe_path],
+        ["clang", "-fPIE", obj, *c_files, "-o", exe_path],
     ]
     for cmd in steps:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -91,23 +91,26 @@ def build_binary(txt_path, flags, exe_path):
             return result.stderr.strip() or f"{cmd[0]} failed"
     return None
 
-def run_io_tests(counters):
-    for txt_path in sorted(glob.glob("tests/io/*.txt")):
-        name = os.path.basename(txt_path)[:-4]
-        exe_path = f"/tmp/io_{name}"
-        error = build_binary(txt_path, FLAGS, exe_path)
-        if error is not None:
-            report(txt_path, False, error, "a binary", counters)
-            continue
-        for in_path in sorted(glob.glob(f"tests/io/{name}.*.in")):
-            session = in_path[:-3]
-            with open(session + ".expected") as f:
-                expected = f.read()
-            with open(in_path) as f:
-                stdin_text = f.read()
-            result = subprocess.run([exe_path], capture_output=True,
-                                    text=True, input=stdin_text)
-            report(session, result.stdout == expected, result.stdout, expected, counters)
+def run_binary_tests(counters):
+    for directory in ("tests/io", "tests/ffi"):
+        for txt_path in sorted(glob.glob(f"{directory}/*.txt")):
+            name = os.path.basename(txt_path)[:-4]
+            exe_path = f"/tmp/bin_{os.path.basename(directory)}_{name}"
+            c_path = f"{directory}/{name}.c"
+            c_files = [c_path] if os.path.exists(c_path) else []
+            error = build_binary(txt_path, FLAGS, exe_path, c_files)
+            if error is not None:
+                report(txt_path, False, error, "a binary", counters)
+                continue
+            for in_path in sorted(glob.glob(f"{directory}/{name}.*.in")):
+                session = in_path[:-3]
+                with open(session + ".expected") as f:
+                    expected = f.read()
+                with open(in_path) as f:
+                    stdin_text = f.read()
+                result = subprocess.run([exe_path], capture_output=True,
+                                        text=True, input=stdin_text)
+                report(session, result.stdout == expected, result.stdout, expected, counters)
 
 def main():
     counters = {"passed": 0, "failed": 0}
@@ -136,7 +139,7 @@ def main():
     for path in sorted(glob.glob("tests/opt/*.astc")):
         report(path, *run_astc_test(path), counters)
 
-    run_io_tests(counters)
+    run_binary_tests(counters)
     print(f"\n{counters['passed']} passed, {counters['failed']} failed")
     sys.exit(1 if counters["failed"] else 0)
 

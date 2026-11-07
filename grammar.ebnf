@@ -1,7 +1,8 @@
-program   ::= { struct } { fn } { statement } exit
+program   ::= { struct } { fn | extern_fn } { statement } exit
 struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 field_decl ::= type [ "mut" ] ident NL
 fn        ::= "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL fn_block
+extern_fn ::= "extern" "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL
 param     ::= type ident
 fn_block  ::= "{" NL ( statement { statement } exit | exit ) "}" NL
 lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]" "(" [ param { "," param } ] ")" "->" type NL fn_block

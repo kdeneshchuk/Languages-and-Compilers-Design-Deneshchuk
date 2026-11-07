@@ -7,6 +7,7 @@ I32, I64, I1, I8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
 
 LLVM_TYPES = {"i32": I32, "i64": I64, "bool": I1}
 BUILTIN = ("i32", "i64", "bool")
+MODULE_NAMES = ("main", "printf", "scanf", "fmt", "fmt_bool", "true_str", "false_str")
 
 def coerce(builder, value, have, want):
     if have == "i32" and want == "i64":
@@ -21,6 +22,7 @@ KEYWORDS = {
     "struct": "keyword",
     "fn": "keyword",
     "read": "keyword", "print": "keyword",
+    "extern": "keyword",
 }
 
 def is_alpha(b):
@@ -128,6 +130,16 @@ class MemberFnNode(FnNode):
 
     def accept(self, visitor):
         return visitor.visit_member_fn(self)
+
+class ExternFnNode(FnNode):
+    def label(self):
+        return f"Extern {self.name} -> {self.ret_type}"
+
+    def children(self):
+        return self.params
+
+    def accept(self, visitor):
+        return visitor.visit_extern(self)
 
 class ProgramNode(Node):
     def __init__(self, line, col, structs, functions, statements, exit_node):
@@ -627,13 +639,28 @@ class SemanticChecker:
             self.check_known_type(p.type_name, p)
         self.check_known_type(fn.ret_type, fn)
 
+    def check_extern_types(self, fn):
+        for p in fn.params:
+            if p.type_name not in ("i32", "i64"):
+                raise CompileError(f"line {p.line}:{p.col}: parameter '{p.name}' of extern "
+                                   f"function '{fn.name}' has type '{p.type_name}': "
+                                   f"only i32 and i64 cross into C")
+        if fn.ret_type not in ("i32", "i64"):
+            raise CompileError(f"line {fn.line}:{fn.col}: extern function '{fn.name}' returns "
+                               f"'{fn.ret_type}': only i32 and i64 cross into C")
+
     def collect_signatures(self, functions):
         for fn in functions:
+            if isinstance(fn, ExternFnNode) and (fn.name in MODULE_NAMES or fn.name in self.ir_names):
+                raise CompileError(f"line {fn.line}:{fn.col}: '{fn.name}' is a name the "
+                                   f"compiler already uses in the module")
             if fn.name in self.structs:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' has the name of a struct")
             if fn.name in self.fns:
                 raise CompileError(f"line {fn.line}:{fn.col}: function '{fn.name}' is already declared")
             self.check_signature(fn)
+            if isinstance(fn, ExternFnNode):
+                self.check_extern_types(fn)
             self.fns[fn.name] = fn
 
     def visit_fn(self, node):
@@ -650,6 +677,9 @@ class SemanticChecker:
         self.current_struct = self.structs[node.owner]
         node.body.accept(self)
         self.scopes, self.current_fn, self.current_struct = saved
+
+    def visit_extern(self, node):
+        pass
 
     def fresh_lambda_name(self, name):
         base = f"lambda.{name}"
@@ -1032,6 +1062,193 @@ class SemanticChecker:
         raise CompileError(f"line {at.line}:{at.col}: cannot {what} of type {want} "
                             f"with a value of type {have}")
 
+def has_call_or_read(n):
+    if isinstance(n, (ReadNode, CallNode, MemberCallNode)):
+        return True
+    return any(has_call_or_read(c) for c in n.children())
+
+def callee_of(n):
+    sugar = getattr(n, "sugar", None)
+    if sugar is not None:
+        return getattr(sugar, "fn", None)
+    return getattr(n, "fn", None)
+
+
+def has_effect(n, effects):
+    if isinstance(n, ReadNode):
+        return True
+    if isinstance(n, (CallNode, MemberCallNode)) and callee_of(n) in effects:
+        return True
+    return any(has_effect(c, effects) for c in n.children())
+
+
+def own_effect(n):
+    if isinstance(n, LambdaNode):
+        return False
+    if isinstance(n, (PrintNode, ReadNode, WhileNode)):
+        return True
+    return any(own_effect(c) for c in n.children())
+
+
+def collect_callees(n, out):
+    if isinstance(n, LambdaNode):
+        return
+    if isinstance(n, (CallNode, MemberCallNode)):
+        fn = callee_of(n)
+        if fn is not None:
+            out.add(fn)
+    for c in n.children():
+        collect_callees(c, out)
+
+
+def all_functions(tree):
+    fns = list(tree.functions)
+    for st in tree.structs + tree.lambda_structs:
+        fns += st.fns
+    return fns
+
+
+def reaches_itself(f, callees):
+    seen = set()
+    stack = list(callees[f])
+    while stack:
+        g = stack.pop()
+        if g is f:
+            return True
+        if g in seen or g not in callees:
+            continue
+        seen.add(g)
+        stack.extend(callees[g])
+    return False
+
+
+def effectful_fns(tree):
+    fns = all_functions(tree)
+    callees = {}
+    effects = set()
+    for f in fns:
+        if isinstance(f, ExternFnNode):
+            callees[f] = set()
+            effects.add(f)
+            continue
+        out = set()
+        collect_callees(f.body, out)
+        callees[f] = out
+        if (isinstance(f, MemberFnNode) and f.mutating) or own_effect(f.body):
+            effects.add(f)
+    for f in fns:
+        if reaches_itself(f, callees):
+            effects.add(f)
+    changed = True
+    while changed:
+        changed = False
+        for f in fns:
+            if f not in effects and callees[f] & effects:
+                effects.add(f)
+                changed = True
+    return effects
+
+
+def fn_label(f):
+    owner = getattr(f, "owner", None)
+    return f"{owner}.{f.name}" if owner else f.name
+
+class UseCounter:
+    def __init__(self, effects=None):
+        self.effects = effects
+        self.reads = {}
+        self.decls = {}
+        self.calls = {}
+        self.fn_nodes = {}
+        self.live_lambdas = set()
+
+    def observable(self, n):
+        if self.effects is None:
+            return has_call_or_read(n)
+        return has_effect(n, self.effects)
+
+    def read(self, decl):
+        if isinstance(decl, DeclNode):
+            self.reads[id(decl)] = self.reads.get(id(decl), 0) + 1
+
+    def walk(self, n):
+        if isinstance(n, FnNode) and not isinstance(n, MemberFnNode):
+            self.fn_nodes[id(n)] = n
+            self.calls.setdefault(id(n), 0)
+        if isinstance(n, DeclNode):
+            self.decls[id(n)] = n
+            self.reads.setdefault(id(n), 0)
+            if any(self.observable(e) for e in n.inits):
+                self.read(n)
+        elif isinstance(n, AssignNode):
+            if self.observable(n.value):
+                self.read(n.decl)
+        elif isinstance(n, (VarNode, MemberNode)):
+            self.read(n.decl)
+            return
+        elif isinstance(n, LambdaNode):
+            self.live_lambdas.add(id(n.struct))
+            self.walk(n.decl)
+            self.walk(n.body)
+            return
+        sugar = getattr(n, "sugar", None)
+        if sugar is not None:
+            self.walk(sugar)
+            return
+        if isinstance(n, CallNode) and n.this is None:
+            self.calls[id(n.fn)] = self.calls.get(id(n.fn), 0) + 1
+        for c in n.children():
+            self.walk(c)
+
+    def report(self):
+        for d in sorted(self.decls.values(), key=lambda d: (d.line, d.col)):
+            print(f"line {d.line}: {d.name} reads={self.reads[id(d)]}")
+        for f in sorted(self.fn_nodes.values(), key=lambda f: (f.line, f.col)):
+            print(f"line {f.line}: fn {f.name} calls={self.calls[id(f)]}")
+
+class Pruner:
+    def __init__(self, dead, dead_fns):
+        self.dead = dead
+        self.dead_fns = dead_fns
+        self.removed = 0
+
+    def is_dead(self, s):
+        if isinstance(s, DeclNode):
+            return id(s) in self.dead
+        if isinstance(s, AssignNode):
+            return id(s.decl) in self.dead
+        return False
+
+    def prune(self, n):
+        if isinstance(n, ProgramNode):
+            kept = [f for f in n.functions if id(f) not in self.dead_fns]
+            self.removed += len(n.functions) - len(kept)
+            n.functions = kept
+        if isinstance(n, (ProgramNode, BlockNode)):
+            kept = [s for s in n.statements if not self.is_dead(s)]
+            self.removed += len(n.statements) - len(kept)
+            n.statements = kept
+        for c in n.children():
+            self.prune(c)
+
+
+def remove_unused(tree):
+    rounds = 0
+    while True:
+        rounds += 1
+        counter = UseCounter(effectful_fns(tree))
+        counter.walk(tree)
+        dead = {i for i, k in counter.reads.items() if k == 0}
+        dead_fns = {id(f) for f in tree.functions if counter.calls.get(id(f), 0) == 0}
+        pruner = Pruner(dead, dead_fns)
+        pruner.prune(tree)
+        if os.environ.get("OPT_TRACE"):
+            print(f"round {rounds}: removed {pruner.removed}", file=sys.stderr)
+        if pruner.removed == 0:
+            tree.lambda_structs = [s for s in tree.lambda_structs if id(s) in counter.live_lambdas]
+            return tree
+
+
 class CodeGen:
     def __init__(self, builder):
         self.builder = builder
@@ -1117,7 +1334,8 @@ class CodeGen:
         for fn in functions:
             fnty = ir.FunctionType(self.ir_type(fn.ret_type),
                                    [self.ir_type(p.type_name) for p in fn.params])
-            self.fns[fn.name] = ir.Function(self.module, fnty, name=f"fn.{fn.name}")
+            ir_name = fn.name if isinstance(fn, ExternFnNode) else f"fn.{fn.name}"
+            self.fns[fn.name] = ir.Function(self.module, fnty, name=ir_name)
 
     def declare_member_fns(self, structs):
         for st in structs:
@@ -1139,6 +1357,9 @@ class CodeGen:
             self.builder.store(arg, p.ptr)
         node.body.accept(self)
         self.builder, self.function, self.n_slots, self.current_fn = saved
+
+    def visit_extern(self, node):
+        pass
 
     def visit_member_fn(self, node):
         saved = (self.builder, self.function, self.n_slots, self.current_fn)
@@ -1738,6 +1959,8 @@ class Parser:
                 self.eat()
                 self.expect_eol()
                 break
+            if first.kind == "keyword" and first.text == "extern":
+                self.error("'extern' is not allowed here")
             if first.kind == "keyword" and first.text == "fn":
                 if not fields:
                     self.error("a member function cannot come before the first field")
@@ -1768,6 +1991,25 @@ class Parser:
                     break
         self.expect("rparen", "')'")
         return params
+
+    def parse_extern(self):
+        self.eat()
+        fn_tok = self.peek()
+        if fn_tok is None or not (fn_tok.kind == "keyword" and fn_tok.text == "fn"):
+            self.error("expected 'fn' after 'extern'")
+        self.eat()
+        name_tok = self.expect("ident", "a function name")
+        self.expect_op(":=")
+        params = self.parse_params()
+        self.expect("arrow", "'->'")
+        ret_tok = self.parse_type()
+        self.expect_eol()
+        nxt = self.peek_line()
+        if nxt is not None and nxt[0].kind == "lbrace":
+            self.error(f"extern function '{name_tok.text}' has no body: "
+                       f"it is defined in C", at=nxt[0])
+        return ExternFnNode(name_tok.line, name_tok.col, name_tok.text,
+                            params, ret_tok.text, None)
 
     def parse_fn(self, node_class=FnNode):
         fn_tok = self.eat()
@@ -1938,6 +2180,8 @@ class Parser:
 
     def parse_statement(self):
         tok = self.peek()
+        if tok.kind == "keyword" and tok.text == "extern":
+            self.error("'extern' is not allowed here")
         if tok.kind == "keyword" and tok.text == "fn" and self.is_lambda_start():
             return self.parse_lambda()
         if tok.kind == "keyword" and tok.text in ("i32", "i64", "bool"):
@@ -1979,6 +2223,10 @@ class Parser:
                     if stmts:
                         self.error("function declarations come before the statements")
                     functions.append(self.parse_fn())
+            elif first.kind == "keyword" and first.text == "extern":
+                if stmts:
+                    self.error("function declarations come before the statements")
+                functions.append(self.parse_extern())
             elif first.kind == "keyword" and first.text == "exit":
                 exit_node = self.parse_exit()
             else:
@@ -1992,24 +2240,28 @@ class Parser:
 
         return ProgramNode(1, 1, structs, functions, stmts, exit_node)
 
+MODES = ("--ast", "--ast-checked", "--tokens")
+USAGE = "usage: compiler.py [--remove-unused] [--ast | --ast-checked | --tokens] input.txt [output.ll]"
+
 def main_cli():
-    args = sys.argv[1:]
+    mode, do_remove, args = None, False, []
+    for a in sys.argv[1:]:
+        if a == "--remove-unused":
+            do_remove = True
+        elif a in MODES:
+            if mode is not None:
+                print(USAGE, file=sys.stderr)
+                sys.exit(2)
+            mode = a
+        elif a.startswith("-"):
+            print(f"unknown option {a!r}", file=sys.stderr)
+            print(USAGE, file=sys.stderr)
+            sys.exit(2)
+        else:
+            args.append(a)
 
-    mode = None
-    if args and args[0] in ("--ast", "--tokens", "--ast-checked"):
-        mode = args[0]
-        args = args[1:]
-
-    if mode is None and len(args) != 2:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-    if mode is not None and len(args) != 1:
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
-        sys.exit(2)
-
-    if args[0].startswith("-"):
-        print(f"unknown option {args[0]!r}", file=sys.stderr)
-        print("usage: compiler.py [--ast | --ast-checked | --tokens] input.txt [output.ll]", file=sys.stderr)
+    if len(args) != (1 if mode else 2):
+        print(USAGE, file=sys.stderr)
         sys.exit(2)
 
     src_path = args[0]
@@ -2035,9 +2287,14 @@ def main_cli():
             return
         tree = Parser(token_lines).parse_program()
         SemanticChecker().check(tree)
+        if os.environ.get("OPT_DEBUG"):
+            c = UseCounter(); c.walk(tree); c.report()
+            print("effects:", sorted(fn_label(f) for f in effectful_fns(tree)))
         if mode == "--ast":
             tree.dump()
             return
+        if do_remove:
+            remove_unused(tree)
         if mode == "--ast-checked":
             tree.dump(checked=True)
             return

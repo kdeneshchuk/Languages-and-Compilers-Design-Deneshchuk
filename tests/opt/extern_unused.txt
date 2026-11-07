@@ -1,0 +1,4 @@
+extern fn abs := (i32 v) -> i32
+extern fn llabs := (i64 v) -> i64
+print(7)
+exit 0

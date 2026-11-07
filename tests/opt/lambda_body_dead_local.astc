@@ -1,0 +1,19 @@
+Program
+  Decl k i32 const
+    Const 10
+  Lambda add_k -> i32
+    Struct lambda.add_k
+      Member k i32 const
+      MemberFn call -> i32
+        Param y i32
+        Block
+          Decl r i32 const
+            BinOp +
+              Var k
+              Var y
+          Exit
+            Var r
+    Decl add_k lambda.add_k const
+      Var k
+  Exit
+    Const 0

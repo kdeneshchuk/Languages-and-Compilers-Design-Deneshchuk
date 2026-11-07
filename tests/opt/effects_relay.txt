@@ -1,0 +1,17 @@
+fn loud := (i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+fn relay := (i32 a) -> i32
+{
+    i32 r{loud(a)}
+    exit r
+}
+fn outer := (i32 a) -> i32
+{
+    i32 r{relay(a)}
+    exit r
+}
+i32 v{outer(7)}
+exit 0

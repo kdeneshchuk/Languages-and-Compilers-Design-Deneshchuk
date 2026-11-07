@@ -1,0 +1,15 @@
+fn g := (i32 a) -> i32
+{
+    exit a
+}
+fn unused := (i32 k) -> i32
+{
+    fn inner := [k](i32 y) -> i32
+    {
+        i32 r{g(y)}
+        exit r
+    }
+    i32 v{inner(1)}
+    exit v
+}
+exit 0

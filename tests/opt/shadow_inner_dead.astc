@@ -1,0 +1,8 @@
+Program
+  Decl x i32 const
+    Const 1
+  If
+    Bool true
+    Block
+  Exit
+    Var x

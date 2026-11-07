@@ -1,0 +1,15 @@
+struct Point
+{
+    i32 x
+    i32 y
+}
+struct Circle
+{
+    Point center
+    i32 radius
+}
+Point p{1, 2}
+Point q{p}
+Circle c{{3, 4}, 5}
+Circle d{p, 6}
+exit 0

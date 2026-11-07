@@ -1,0 +1,35 @@
+struct Box
+{
+    i32 v
+    fn abs := (i32 z) -> i32
+    {
+        exit 100
+    }
+    fn pick := () -> i32
+    {
+        i32 r{abs(v)}
+        exit r
+    }
+}
+extern fn abs := (i32 v) -> i32
+fn twice := (i32 n) -> i32
+{
+    i32 r{abs(n) + abs(abs(n))}
+    exit r
+}
+i32 neg{0 - 6}
+Box b{neg}
+i32 captured{neg}
+fn viaLambda := [captured]() -> i32
+{
+    i32 r{abs(captured)}
+    exit r
+}
+print(twice(neg))
+print(b.pick())
+print(viaLambda())
+if abs(neg) == 6
+{
+    print("cond")
+}
+exit abs(neg)

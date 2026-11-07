@@ -1,0 +1,18 @@
+Program
+  Struct Box
+    Member v i32 const
+    MemberFn g -> i32
+      Block
+        Exit
+          Var v
+    MemberFn h -> i32
+      Block
+        Decl r i32 const
+          Call g
+        Exit
+          Var r
+  Decl b Box const
+    Const 7
+  Exit
+    MemberCall h
+      Var b

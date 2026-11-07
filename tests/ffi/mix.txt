@@ -1,0 +1,7 @@
+extern fn mix := (i32 a, i64 b, i32 c) -> i64
+extern fn seven := () -> i32
+i32 n{0 - 5}
+print(mix(1, 2, 3))
+print(mix(1, n, 3))
+print(seven())
+exit mix(seven(), n, 0)

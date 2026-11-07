@@ -1,0 +1,8 @@
+extern fn abs := (i32 v) -> i32
+extern fn llabs := (i64 v) -> i64
+i32 a{0 - 7}
+i64 big{0 - 3000000000}
+print(abs(a))
+print(llabs(big))
+i64 r{llabs(big) + abs(a)}
+exit r

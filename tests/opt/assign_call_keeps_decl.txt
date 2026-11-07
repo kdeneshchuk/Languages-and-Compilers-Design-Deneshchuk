@@ -1,0 +1,8 @@
+fn bump := (i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+i32 mut y{0}
+y := bump(4)
+exit 0

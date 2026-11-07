@@ -1,0 +1,4 @@
+extern fn noisy := (i32 v) -> i32
+i32 ignored{noisy(5)}
+print("done")
+exit 0

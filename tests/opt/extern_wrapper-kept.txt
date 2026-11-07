@@ -1,0 +1,7 @@
+extern fn abs := (i32 v) -> i32
+fn wrapper := (i32 v) -> i32
+{
+    exit abs(v)
+}
+i32 a{wrapper(0 - 3)}
+exit 0

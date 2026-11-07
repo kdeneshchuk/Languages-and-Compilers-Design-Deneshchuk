@@ -1,0 +1,6 @@
+extern fn abs := (i32 v) -> i32
+struct P
+{
+    i32 x
+}
+exit 0

@@ -28,6 +28,7 @@ removes unused variables and functions (see Optimizations).
     opt -passes=mem2reg -S output.ll               # same IR, allocas promoted to registers (phi)
     llc -filetype=obj -relocation-model=pic output.ll -o output.o
     clang -fPIE output.o -o program && ./program
+    ./full_compiler.sh [NAME]                      # the same three commands for tests/io/NAME.txt (points by default)
 
 `--ast` runs the semantic pass first, so a program that does not type-check
 is rejected in that mode too. `--ast` prints the tree the parser built;
@@ -525,7 +526,7 @@ has no heap yet, so nothing is freed in the binary.
 
 ## Run tests
     python3 run_tests.py                   # every test as it is
-    python3 run_tests.py --remove-unused   # tests/ok and tests/err through the pass
+    python3 run_tests.py --remove-unused   # tests/ok, tests/err and the tests/io binaries through the pass
 
 Runs every `tests/*.txt`, `tests/ok/*.txt`, and `tests/err/*.txt` against
 its `.expected`: compiles, runs the result through `lli` when compilation
@@ -548,3 +549,16 @@ message must stay the same.
 Valid programs write output.ll and produce no stderr. Invalid programs
 print `compilation error: line L:C: ...` to stderr and exit non-zero,
 writing no output file.
+
+`tests/io` holds programs that are built as real binaries, because the
+deliverable is a program that runs without `lli`, and the linker is the check
+that the declarations of `printf` and `scanf` are right. For every
+`tests/io/NAME.txt` the script runs three commands (`python3 compiler.py`,
+`llc -filetype=obj -relocation-model=pic`, `clang -fPIE`) and feeds the binary
+every session `NAME.S.in` (S is any name); the output must be exactly
+`NAME.S.expected`, without trimming. A typed line never reaches the output when
+the input comes from a file, so `.expected` holds only the prompts and the
+results. Every session has as many numbers as the program has `read()` calls:
+a missing number makes `scanf` write nothing, and `read()` returns 0. With
+`--remove-unused` the binaries are built from the optimized tree. The binaries
+and their `.ll` and `.o` files go to `/tmp`, not to the repository.
